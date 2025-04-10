@@ -2,9 +2,13 @@
 
 A powerful and feature-rich download manager built with Python and PyQt5, featuring multi-threaded downloads and resume capability.
 
+---
 ![Dark Mode](https://github.com/Likhithsai2580/XcelerateDL/blob/main/imgs/home-dark.png?raw=true)
 
+---
 ![Light Mode](https://github.com/Likhithsai2580/XcelerateDL/blob/main/imgs/home-light.png?raw=true)
+
+---
 
 ## Features
 
