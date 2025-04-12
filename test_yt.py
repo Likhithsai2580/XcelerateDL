@@ -6,11 +6,10 @@ from pytubefix import YouTube
 from pytubefix.exceptions import PytubeFixError as PytubeError
 from requests.exceptions import RequestException
 import time
-import signal
 import sys
 
 class YoutubeDownloader:
-    def __init__(self, url, output_path, num_threads=4, format_type='video'):
+    def __init__(self, url, output_path, num_threads=4, format_type='video', progress_callback=None):
         self.url = url
         self.output_path = output_path
         self.num_threads = num_threads
@@ -25,14 +24,7 @@ class YoutubeDownloader:
         self.session = requests.Session()
         self.title = ""
         self.download_url = ""
-
-        signal.signal(signal.SIGINT, self._signal_handler)
-
-    def _signal_handler(self, signum, frame):
-        self.stopped.set()
-        print("\nReceived interrupt. Saving progress and exiting.")
-        self._save_progress()
-        sys.exit(0)
+        self.progress_callback = progress_callback
 
     def select_stream(self):
         try:
@@ -75,12 +67,11 @@ class YoutubeDownloader:
         if os.path.exists(self.progress_file):
             with open(self.progress_file, 'r') as f:
                 data = json.load(f)
-                if data.get('url') != self.download_url:
-                    raise ValueError("URL mismatch. Cannot resume download.")
                 self.total_size = data['total_size']
                 self.chunks = data['chunks']
                 self.temp_file = data['temp_file']
                 self.output_path = data['output_path']
+                self.download_url = data['url']  # Load the download URL
                 self.downloaded_size = sum(chunk['downloaded'] for chunk in self.chunks)
                 return True
         return False
@@ -132,7 +123,10 @@ class YoutubeDownloader:
         try:
             resume = self._load_progress()
             if resume:
-                print(f"Resuming download for {self.title}...")
+                print(f"Resuming download...")
+                # If resuming, we need the download URL but don't need to select a new stream
+                if not self.download_url:
+                    self.select_stream()
             else:
                 self.select_stream()
                 self._get_total_size()
@@ -154,7 +148,10 @@ class YoutubeDownloader:
             while any(thread.is_alive() for thread in threads):
                 time.sleep(0.5)
                 progress = (self.downloaded_size / self.total_size) * 100
-                print(f"\rProgress: {progress:.2f}%", end='')
+                if self.progress_callback:
+                    self.progress_callback(progress)
+                else:
+                    print(f"\rProgress: {progress:.2f}%", end='')
                 
                 current_time = time.time()
                 if current_time - last_save_time >= 1:
