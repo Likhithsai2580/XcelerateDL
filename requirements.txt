@@ -1,0 +1,8 @@
+# XcelerateDL Project Dependencies
+
+# System dependencies
+ffmpeg
+
+# Python dependencies
+requests
+pytube

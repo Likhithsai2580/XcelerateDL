@@ -143,3 +143,135 @@ MIT License - Feel free to use and modify as needed.
 - Bandwidth control features
 - Browser integration
 - Custom theme support
+
+## Detailed Explanations and Examples for HTTP and YouTube Downloads
+
+### HTTP Downloads
+
+#### Example
+1. Launch the application:
+```bash
+python gui.py
+```
+2. Switch to the HTTP tab.
+3. Enter the URL(s) you want to download:
+   - Paste the URL in the input field.
+   - Click "Add URL" for each link.
+   - Multiple URLs can be queued.
+4. Select the download location.
+5. Click "Download All".
+6. Monitor the progress in real-time.
+
+#### Detailed Explanation
+- **Multi-threaded Downloads**: The application uses multiple threads to download different parts of the file simultaneously, which speeds up the download process.
+- **Progress Tracking**: The progress of each download is tracked and displayed in real-time.
+- **Pause/Resume Functionality**: Downloads can be paused and resumed at any time. The application saves the progress and resumes from where it left off.
+
+### YouTube Downloads
+
+#### Example
+1. Switch to the YouTube tab.
+2. Enter the YouTube URL.
+3. Choose the download options:
+   - Select the video quality.
+   - Choose the format (video or audio).
+4. Select the destination folder.
+5. Start the download.
+
+#### Detailed Explanation
+- **Video Quality Selection**: Users can choose the quality of the video they want to download.
+- **Format Selection**: Users can choose to download the video or just the audio.
+- **Progress Tracking**: The progress of the download is tracked and displayed in real-time.
+- **Pause/Resume Functionality**: Downloads can be paused and resumed at any time. The application saves the progress and resumes from where it left off.
+
+## Detailed Installation Steps, Troubleshooting Tips, and System Requirements
+
+### Installation Steps
+1. Clone the repository or download the source code.
+2. Install the required dependencies:
+```bash
+pip install -r requirements.txt
+```
+3. Ensure all files are in the same directory:
+   - gui.py
+   - idm.py
+   - style.qss
+   - resources/ (folder with icons)
+
+### Troubleshooting Tips
+- **Dependency Issues**: Ensure all dependencies are installed correctly. Use `pip list` to check installed packages.
+- **Permission Issues**: Run the application with appropriate permissions. On Windows, try running as an administrator.
+- **Network Issues**: Check your internet connection. Ensure that the URLs you are trying to download are accessible.
+
+### System Requirements
+- **Operating System**: Windows, Linux, or MacOS
+- **Python Version**: Python 3.7 or higher
+- **Memory**: Minimum 2GB RAM
+
+## In-depth Technical Details and Diagrams
+
+### Architecture
+
+#### Components
+- **gui.py**: PyQt5-based GUI implementation
+  - Download management interface
+  - Progress monitoring
+  - Theme management
+- **idm.py**: Core download engine
+  - HTTP download implementation
+  - YouTube download integration
+  - Resume system implementation
+
+#### Technical Details
+- **GUI Rendering**: Uses PyQt5 for rendering the graphical user interface.
+- **Multi-threading**: Implements multi-threading for parallel downloads.
+- **Chunk-based Downloading**: Employs chunk-based downloading for better reliability.
+- **YouTube Download Support**: Integrated YouTube download support via yt-dlp.
+- **Progress Tracking**: Tracks progress with JSON-based state management.
+
+### Diagrams
+#### Architecture Diagram
+```plaintext
++------------------+       +------------------+
+|                  |       |                  |
+|     gui.py       |<----->|     idm.py       |
+|                  |       |                  |
++------------------+       +------------------+
+```
+
+## Guidelines for Contributing, Code of Conduct, and Instructions for Submitting Pull Requests
+
+### Contributing Guidelines
+1. Fork the repository.
+2. Create a feature branch.
+3. Commit your changes.
+4. Submit a pull request.
+
+### Code of Conduct
+- **Respect**: Treat everyone with respect. Harassment and abuse are not tolerated.
+- **Collaboration**: Work together to achieve common goals. Share knowledge and help others.
+- **Integrity**: Be honest and transparent in your contributions.
+
+### Instructions for Submitting Pull Requests
+1. Ensure your code follows the project's coding standards.
+2. Write clear and concise commit messages.
+3. Provide a detailed description of your changes in the pull request.
+4. Address any feedback or comments from reviewers.
+
+## License
+
+MIT License - Feel free to use and modify as needed.
+
+## Support
+
+- Report issues on GitHub.
+- Check the documentation for common problems.
+- Contact the developers for major concerns.
+
+## Future Plans
+
+- Enhanced YouTube support.
+- Improved download scheduling.
+- Bandwidth control features.
+- Browser integration.
+- Custom theme support.
