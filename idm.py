@@ -8,6 +8,7 @@ import logging
 import colorlog
 from pathlib import Path
 from urllib.parse import urlparse
+import yt_dlp
 
 # --------------------------
 # Logger Configuration
@@ -176,12 +177,7 @@ class HttpDownloader:
     def get_file_size(self):
         try:
             with self.session.head(self.url, allow_redirects=True, timeout=10) as resp:
-                if resp.status_code != 200:
-                    logger.error(f"HEAD failed: HTTP {resp.status_code}")
-                    return False
-                
-                content_length = resp.headers.get('Content-Length')
-                if content_length:
+                if (content_length := resp.headers.get('Content-Length')):
                     self.file_size = int(content_length)
                     self.unknown_size = False
                 else:
@@ -245,6 +241,10 @@ class HttpDownloader:
                 headers['Range'] = f'bytes={start}-'
 
         retries = 3
+        last_update_time = time.time()
+        bytes_since_last_update = 0
+        current_speed = 0
+        
         for attempt in range(retries):
             if self.shutdown_flag.is_set():
                 return
@@ -262,32 +262,53 @@ class HttpDownloader:
                     with open(part_file, mode) as f:
                         current_pos = f.tell() if mode == 'ab' else 0
                         chunk_size = 8192 * 8
+                        
                         for chunk in resp.iter_content(chunk_size=chunk_size):
                             if self.shutdown_flag.is_set():
+                                self._save_resume_data()
                                 return
+                                
                             if chunk:
                                 f.write(chunk)
+                                chunk_len = len(chunk)
+                                
                                 with self.lock:
-                                    self.downloaded_bytes += len(chunk)
+                                    self.downloaded_bytes += chunk_len
                                     self.part_progress[part_id] = current_pos + f.tell()
-                                    if time.time() - self.last_save_time > 1:
-                                        self._save_resume_data()
-                                        self.last_save_time = time.time()
+                                    bytes_since_last_update += chunk_len
                                     
-                                    # Calculate progress percentage and speed
-                                    if self.file_size > 0:
-                                        percent = (self.downloaded_bytes / self.file_size) * 100
-                                        elapsed = time.time() - self.start_time
-                                        speed = self.downloaded_bytes / (1024 * 1024 * elapsed) if elapsed > 0 else 0
+                                    current_time = time.time()
+                                    update_interval = current_time - last_update_time
+                                    
+                                    if update_interval >= 0.1:  # Update every 100ms
+                                        # Calculate speed using moving average
+                                        instant_speed = bytes_since_last_update / (1024 * 1024 * update_interval)  # MB/s
+                                        current_speed = (current_speed * 0.7 + instant_speed * 0.3)  # Smoothing
                                         
-                                        # Emit progress update
-                                        if hasattr(self, 'progress_callback'):
-                                            self.progress_callback({
-                                                'percent': int(percent),
-                                                'speed': f"{speed:.2f} MB/s"
-                                            })
+                                        if self.file_size > 0:
+                                            percent = (self.downloaded_bytes / self.file_size) * 100
+                                            # Emit progress update with rich information
+                                            if hasattr(self, 'progress_callback'):
+                                                self.progress_callback({
+                                                    'percent': percent,
+                                                    'speed': f"{current_speed:.2f} MB/s",
+                                                    'downloaded': self.downloaded_bytes,
+                                                    'total': self.file_size,
+                                                    'eta': (self.file_size - self.downloaded_bytes) / (current_speed * 1024 * 1024) if current_speed > 0 else 0
+                                                })
+                                        
+                                        # Reset counters
+                                        bytes_since_last_update = 0
+                                        last_update_time = current_time
+                                        
+                                        # Save progress data periodically
+                                        if time.time() - self.last_save_time > 1:
+                                            self._save_resume_data()
+                                            self.last_save_time = time.time()
+                    
                     logger.info(f"Part {part_id} completed")
                     return
+                    
             except Exception as e:
                 logger.warning(f"Part {part_id} attempt {attempt+1} failed: {str(e)}")
                 time.sleep(2 ** attempt)
@@ -411,6 +432,7 @@ class HttpDownloader:
     def pause_download(self):
         """Pause the download by setting the shutdown flag"""
         self.shutdown_flag.set()
+        self._save_resume_data()  # Save current progress
         logger.info("Download paused")
 
     def resume_download(self):
