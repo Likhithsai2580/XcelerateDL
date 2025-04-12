@@ -204,19 +204,20 @@ class DownloadThread(QThread):
         super().__init__()
         self.downloader = downloader
         self.is_paused = False
-        # Set progress callback on the downloader
-        # Handle both progress_callback and progress_updated attributes
-        if hasattr(self.downloader, 'progress_callback'):
-            self.downloader.progress_callback = self.progress_updated.emit
-        if hasattr(self.downloader, 'progress_updated'):
-            self.downloader.progress_updated = self.progress_updated.emit
+        
+        # Set up a direct callback that emits the signal
+        def emit_progress(progress_data):
+            self.progress_updated.emit(progress_data)
+        
+        # Ensure progress callback is properly set
+        self.downloader.progress_callback = emit_progress
 
     def run(self):
         try:
             success = self.downloader.start_download()
             self.download_complete.emit(success)
         except Exception as e:
-            print(f"Download error: {e}")
+            logger.error(f"Download error: {e}")
             self.download_complete.emit(False)
         finally:
             # Clean up callback to prevent memory leaks
@@ -320,34 +321,38 @@ class MainWindow(QMainWindow):
             # Process HTTP downloads
             if hasattr(self, 'active_http_downloads'):
                 for download in self.active_http_downloads:
-                    download_info = {
-                        "type": "http",
-                        "url": download['thread'].downloader.url,
-                        "progress": download['progress'].value(),
-                        "status": download['status'].text(),
-                        "timestamp": time.time(),
-                        "output_path": str(download['thread'].downloader.output_path)
-                    }
-                    if "completed successfully" in download['status'].text():
-                        history["completed"].append(download_info)
-                    else:
-                        history["incomplete"].append(download_info)
+                    try:
+                        # Calculate actual progress percentage
+                        progress = 0
+                        if hasattr(download['thread'].downloader, 'file_size') and download['thread'].downloader.file_size > 0:
+                            progress = int((download['thread'].downloader.downloaded_bytes / download['thread'].downloader.file_size) * 100)
+                        else:
+                            progress = download['progress'].value()
 
-            # Process YouTube downloads
-            if hasattr(self, 'active_yt_downloads'):
-                for download in self.active_yt_downloads:
-                    download_info = {
-                        "type": "youtube",
-                        "url": download['thread'].downloader.url,
-                        "progress": download['progress'].value(),
-                        "status": download['status'].text(),
-                        "timestamp": time.time(),
-                        "output_path": str(download['thread'].downloader.output_path)
-                    }
-                    if "completed successfully" in download['status'].text():
-                        history["completed"].append(download_info)
-                    else:
-                        history["incomplete"].append(download_info)
+                        download_info = {
+                            "type": "http",
+                            "url": download['thread'].downloader.url,
+                            "progress": progress,
+                            "status": download['status'].text(),
+                            "timestamp": time.time(),
+                            "output_path": str(download['thread'].downloader.output_path)
+                        }
+
+                        if "completed successfully" in download['status'].text():
+                            history["completed"].append(download_info)
+                        else:
+                            # Update existing incomplete entry if it exists
+                            updated = False
+                            for i, inc in enumerate(history["incomplete"]):
+                                if inc["url"] == download_info["url"]:
+                                    history["incomplete"][i] = download_info
+                                    updated = True
+                                    break
+                            if not updated:
+                                history["incomplete"].append(download_info)
+                    except Exception as e:
+                        logger.error(f"Error processing download state: {e}")
+                        continue
 
             # Save updated history
             self.save_downloads_history(history)
@@ -390,13 +395,22 @@ class MainWindow(QMainWindow):
     def create_header(self):
         header_layout = QHBoxLayout()
         
+        # Add app title to the left
+        app_title = QLabel("Modern Download Manager")
+        app_title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        header_layout.addWidget(app_title)
+        
         # Add spacer to push the theme toggle to the right
         header_layout.addStretch()
         
-        # Create theme toggle button
+        # Create theme toggle button with improved styling
         self.theme_toggle = QPushButton()
         self.theme_toggle.setToolTip("Toggle Dark/Light Mode")
-        self.theme_toggle.setFixedSize(30, 30)
+        self.theme_toggle.setFixedSize(36, 36)
+        self.theme_toggle.setStyleSheet(
+            "QPushButton { border-radius: 18px; padding: 5px; }"
+            "QPushButton:hover { background-color: rgba(128, 128, 128, 0.2); }"
+        )
         self.theme_toggle.clicked.connect(self.toggle_theme)
         self.update_theme_button_icon()
         
@@ -458,10 +472,14 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # URL List
+        # URL List with improved header
+        header_label = QLabel("URLs to download:")
+        header_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        layout.addWidget(header_label)
+        
         self.http_url_list = QListWidget()
         self.http_url_list.setSelectionMode(QListWidget.MultiSelection)
-        layout.addWidget(QLabel("URLs to download:"))
+        self.http_url_list.setAlternatingRowColors(True)  # Improve readability
         layout.addWidget(self.http_url_list)
 
         # URL Input
@@ -495,10 +513,14 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # URL List
+        # URL List with improved header
+        header_label = QLabel("YouTube URLs to download:")
+        header_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        layout.addWidget(header_label)
+        
         self.yt_url_list = QListWidget()
         self.yt_url_list.setSelectionMode(QListWidget.MultiSelection)
-        layout.addWidget(QLabel("YouTube URLs to download:"))
+        self.yt_url_list.setAlternatingRowColors(True)  # Improve readability
         layout.addWidget(self.yt_url_list)
 
         # URL Input
@@ -570,6 +592,9 @@ class MainWindow(QMainWindow):
         
         self.active_http_downloads = []
         
+        # Update tab title to show active downloads
+        self.update_tab_titles()
+        
         for i in range(self.http_url_list.count()):
             url = self.http_url_list.item(i).text()
             
@@ -620,17 +645,60 @@ class MainWindow(QMainWindow):
 
     def update_http_progress(self, progress, idx):
         if idx < len(self.active_http_downloads):
-            # Convert percent to integer before setting value
-            percent = int(progress['percent']) if isinstance(progress['percent'], (int, float)) else 0
-            self.active_http_downloads[idx]['progress'].setValue(percent)
-            self.active_http_downloads[idx]['status'].setText(f"Downloading: {progress['speed']}")
+            try:
+                # Convert percent to integer before setting value
+                if isinstance(progress, dict):
+                    percent = float(progress.get('percent', 0))
+                    self.active_http_downloads[idx]['progress'].setValue(int(percent))
+                    
+                    # Add remaining time estimate if download is progressing
+                    if percent > 0 and percent < 100 and 'speed' in progress:
+                        speed = progress['speed']
+                        if isinstance(speed, str) and ' ' in speed:
+                            speed_value = float(speed.split()[0])
+                            if speed_value > 0:
+                                self.active_http_downloads[idx]['status'].setText(f"Downloading: {speed}")
+                            else:
+                                self.active_http_downloads[idx]['status'].setText("Starting download...")
+                        else:
+                            self.active_http_downloads[idx]['status'].setText("Calculating speed...")
+                    else:
+                        self.active_http_downloads[idx]['status'].setText("Processing...")
+            except (ValueError, TypeError, KeyError) as e:
+                logger.error(f"Error updating progress: {e}")
+                self.active_http_downloads[idx]['status'].setText("Error updating progress")
 
     def http_download_finished(self, success, idx):
         if idx < len(self.active_http_downloads):
             if success:
                 self.active_http_downloads[idx]['status'].setText("Download completed successfully")
+                self.active_http_downloads[idx]['progress'].setValue(100)  # Ensure progress shows 100%
+                # Show a notification
+                QMessageBox.information(self, "Download Complete", 
+                                      f"The HTTP download has completed successfully.\n\nFile: {self.active_http_downloads[idx]['thread'].downloader.output_path}")
             else:
                 self.active_http_downloads[idx]['status'].setText("Download failed")
+                # Show error notification with retry option
+                retry = QMessageBox.question(self, "Download Failed", 
+                                           "The HTTP download failed. Would you like to retry?",
+                                           QMessageBox.Yes | QMessageBox.No)
+                if retry == QMessageBox.Yes:
+                    # Restart the download
+                    thread = self.active_http_downloads[idx]['thread']
+                    url = thread.downloader.url
+                    output_path = thread.downloader.output_path
+                    
+                    # Create new downloader and thread
+                    downloader = HttpDownloader(url, output_path=output_path)
+                    new_thread = DownloadThread(downloader)
+                    new_thread.progress_updated.connect(lambda progress, i=idx: self.update_http_progress(progress, i))
+                    new_thread.download_complete.connect(lambda success, i=idx: self.http_download_finished(success, i))
+                    new_thread.start()
+                    
+                    # Update references
+                    self.active_http_downloads[idx]['thread'] = new_thread
+                    self.active_http_downloads[idx]['status'].setText("Retrying download...")
+                    return
             # Hide pause button when download is complete
             self.active_http_downloads[idx]['pause_btn'].hide()
         
@@ -660,6 +728,9 @@ class MainWindow(QMainWindow):
             self.yt_downloads_layout.itemAt(i).widget().setParent(None)
         
         self.active_yt_downloads = []
+        
+        # Update tab title to show active downloads
+        self.update_tab_titles()
         
         for i in range(self.yt_url_list.count()):
             url = self.yt_url_list.item(i).text()
@@ -692,7 +763,10 @@ class MainWindow(QMainWindow):
             format_type = 'audio' if self.audio_radio.isChecked() else 'video'
             
             # Start download
-            downloader = YoutubeDownloader(url, output_path=f"{output_path}/video_{i}.mp4", format_type=format_type)
+            # Use .mp3 extension for audio files, .mp4 for video files
+            file_extension = '.mp3' if format_type == 'audio' else '.mp4'
+            file_prefix = 'audio' if format_type == 'audio' else 'video'
+            downloader = YoutubeDownloader(url, output_path=f"{output_path}/{file_prefix}_{i}{file_extension}", format_type=format_type)
             thread = DownloadThread(downloader)
             thread.progress_updated.connect(lambda progress, idx=i: self.update_yt_progress(progress, idx))
             thread.download_complete.connect(lambda success, idx=i: self.yt_download_finished(success, idx))
@@ -719,16 +793,66 @@ class MainWindow(QMainWindow):
     def update_yt_progress(self, progress, idx):
         if idx < len(self.active_yt_downloads):
             # Convert percent to integer before setting value
-            percent = int(progress['percent']) if isinstance(progress['percent'], (int, float)) else 0
+            percent = int(progress.get('percent', 0)) if isinstance(progress, dict) else 0
             self.active_yt_downloads[idx]['progress'].setValue(percent)
-            self.active_yt_downloads[idx]['status'].setText(f"Downloading: {progress['speed']}")
+            # Add remaining time estimate if download is progressing
+            if percent > 0 and percent < 100 and isinstance(progress, dict) and 'speed' in progress:
+                speed_kbps = float(progress['speed'].split()[0])
+                if speed_kbps > 0:
+                    # Calculate estimated time remaining
+                    total_size = self.active_yt_downloads[idx]['thread'].downloader.total_size
+                    downloaded = total_size * (percent / 100)
+                    remaining = total_size - downloaded
+                    seconds_left = remaining / (speed_kbps * 1024)
+                    
+                    # Format time remaining
+                    if seconds_left < 60:
+                        time_str = f"{seconds_left:.0f} seconds"
+                    elif seconds_left < 3600:
+                        time_str = f"{seconds_left/60:.1f} minutes"
+                    else:
+                        time_str = f"{seconds_left/3600:.1f} hours"
+                    
+                    self.active_yt_downloads[idx]['status'].setText(
+                        f"Downloading: {progress['speed']} - ETA: {time_str}")
+                else:
+                    self.active_yt_downloads[idx]['status'].setText(f"Downloading: {progress['speed']}")
+            else:
+                self.active_yt_downloads[idx]['status'].setText(f"Downloading: {progress['speed']}")
 
     def yt_download_finished(self, success, idx):
         if idx < len(self.active_yt_downloads):
             if success:
                 self.active_yt_downloads[idx]['status'].setText("YouTube download completed successfully")
+                self.active_yt_downloads[idx]['progress'].setValue(100)  # Ensure progress shows 100%
+                # Show a notification
+                QMessageBox.information(self, "Download Complete", 
+                                      f"The YouTube download has completed successfully.\n\nFile: {self.active_yt_downloads[idx]['thread'].downloader.output_path}")
             else:
                 self.active_yt_downloads[idx]['status'].setText("YouTube download failed")
+                # Show error notification with retry option
+                retry = QMessageBox.question(self, "Download Failed", 
+                                           "The YouTube download failed. Would you like to retry?",
+                                           QMessageBox.Yes | QMessageBox.No)
+                if retry == QMessageBox.Yes:
+                    # Restart the download
+                    thread = self.active_yt_downloads[idx]['thread']
+                    url = thread.downloader.url
+                    output_path = thread.downloader.output_path
+                    format_type = thread.downloader.format_type
+                    
+                    # Create new downloader and thread
+                    downloader = YoutubeDownloader(url, output_path=output_path, format_type=format_type)
+                    new_thread = DownloadThread(downloader)
+                    new_thread.progress_updated.connect(lambda progress, i=idx: self.update_yt_progress(progress, i))
+                    new_thread.download_complete.connect(lambda success, i=idx: self.yt_download_finished(success, i))
+                    new_thread.start()
+                    
+                    # Update references
+                    self.active_yt_downloads[idx]['thread'] = new_thread
+                    self.active_yt_downloads[idx]['status'].setText("Retrying download...")
+                    return
+                    
             # Hide pause button when download is complete
             self.active_yt_downloads[idx]['pause_btn'].hide()
         
@@ -741,9 +865,13 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # Resume Downloads List
+        # Resume Downloads List with improved header
+        header_label = QLabel("Interrupted Downloads:")
+        header_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        layout.addWidget(header_label)
+        
         self.resume_list = QListWidget()
-        layout.addWidget(QLabel("Interrupted Downloads:"))
+        self.resume_list.setAlternatingRowColors(True)  # Improve readability
         layout.addWidget(self.resume_list)
 
         # Refresh and Clear Buttons
@@ -790,6 +918,14 @@ class MainWindow(QMainWindow):
         try:
             with open(self.downloads_history_file, 'r') as f:
                 history = json.load(f)
+            
+            # Check if there are any incomplete downloads    
+            if not history.get("incomplete", []):
+                # Add a placeholder message if no downloads are available
+                placeholder = QListWidgetItem("No interrupted downloads found")
+                placeholder.setFlags(placeholder.flags() & ~Qt.ItemIsSelectable)
+                self.resume_list.addItem(placeholder)
+                return
                 
             for download in history.get("incomplete", []):
                 url = download.get('url', '')
@@ -797,19 +933,32 @@ class MainWindow(QMainWindow):
                 status = download.get('status', '')
                 output_path = download.get('output_path', '')
                 download_type = download.get('type', 'http')
+                timestamp = download.get('timestamp', 0)
                 
-                item_text = f"{url} ({progress}% completed) - {download_type}"
+                # Format the timestamp
+                date_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp)) if timestamp else "Unknown date"
+                
+                # Create a more informative item text
+                item_text = f"{url[:50]}{'...' if len(url) > 50 else ''} ({progress}% completed)\n"
+                item_text += f"Type: {download_type.upper()} | Date: {date_str} | Path: {os.path.basename(output_path)}"
+                
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, {
                     'url': url, 
                     'output_path': output_path,
                     'type': download_type,
-                    'progress': progress
+                    'progress': progress,
+                    'timestamp': timestamp
                 })
                 self.resume_list.addItem(item)
         except Exception as e:
             logger.error(f"Error reading downloads history: {e}")
             QMessageBox.warning(self, "Error", f"Failed to load download history: {e}")
+            
+            # Add a placeholder message if there was an error
+            placeholder = QListWidgetItem("Error loading downloads")
+            placeholder.setFlags(placeholder.flags() & ~Qt.ItemIsSelectable)
+            self.resume_list.addItem(placeholder)
 
 
     def clear_selected_resume(self):
@@ -862,7 +1011,7 @@ class MainWindow(QMainWindow):
             url = data['url']
             output_path = data['output_path']
             download_type = data.get('type', 'http')
-            initial_progress = data.get('progress', 0)
+            initial_progress = int(float(data.get('progress', 0)))  # Convert progress to int
             
             # Create download item UI
             download_item = QWidget()
@@ -923,19 +1072,97 @@ class MainWindow(QMainWindow):
 
     def update_resume_progress(self, progress, idx):
         if idx < len(self.active_resume_downloads):
-            # Convert percent to integer before setting value
-            percent = int(progress['percent']) if isinstance(progress['percent'], (int, float)) else 0
-            self.active_resume_downloads[idx]['progress'].setValue(percent)
-            self.active_resume_downloads[idx]['status'].setText(f"Downloading: {progress['speed']}")
+            try:
+                # Convert percent to integer before setting value
+                if isinstance(progress, dict):
+                    percent = float(progress.get('percent', 0))
+                    self.active_resume_downloads[idx]['progress'].setValue(int(percent))
+                    
+                    # Update progress in the downloads history
+                    item = self.active_resume_downloads[idx]['item']
+                    data = item.data(Qt.UserRole)
+                    if data:
+                        data['progress'] = int(percent)
+                        item.setData(Qt.UserRole, data)
+                    
+                    # Add remaining time estimate if download is progressing
+                    if percent > 0 and percent < 100:
+                        speed = progress.get('speed', 'N/A')
+                        downloaded = progress.get('downloaded', 0)
+                        total = progress.get('total', 0)
+                        
+                        if total > 0 and speed and 'MB/s' in speed:
+                            speed_value = float(speed.split()[0])  # Extract numeric value
+                            remaining = total - downloaded
+                            if speed_value > 0:
+                                seconds_left = remaining / (speed_value * 1024 * 1024)
+                                
+                                # Format time remaining
+                                if seconds_left < 60:
+                                    time_str = f"{seconds_left:.0f} seconds"
+                                elif seconds_left < 3600:
+                                    time_str = f"{seconds_left/60:.1f} minutes"
+                                else:
+                                    time_str = f"{seconds_left/3600:.1f} hours"
+                                    
+                                self.active_resume_downloads[idx]['status'].setText(
+                                    f"Downloading: {speed} - ETA: {time_str}")
+                            else:
+                                self.active_resume_downloads[idx]['status'].setText(f"Downloading: {speed}")
+                        else:
+                            self.active_resume_downloads[idx]['status'].setText(f"Downloading: {speed}")
+                        
+                        # Save progress periodically
+                        self.save_download_states()
+            except (ValueError, TypeError, KeyError) as e:
+                logger.error(f"Error updating progress: {e}")
+                self.active_resume_downloads[idx]['status'].setText("Error updating progress")
 
     def resume_download_finished(self, success, idx):
         if idx < len(self.active_resume_downloads):
             if success:
                 self.active_resume_downloads[idx]['status'].setText("Download completed successfully")
+                self.active_resume_downloads[idx]['progress'].setValue(100)  # Ensure progress shows 100%
                 # Update history - move from incomplete to completed
                 self.update_download_history(self.active_resume_downloads[idx]['item'], completed=True)
+                
+                # Show a notification
+                download_type = self.active_resume_downloads[idx]['thread'].downloader.__class__.__name__
+                QMessageBox.information(self, "Download Complete", 
+                                      f"The resumed {download_type} download has completed successfully.\n\nFile: {self.active_resume_downloads[idx]['thread'].downloader.output_path}")
             else:
                 self.active_resume_downloads[idx]['status'].setText("Download failed")
+                
+                # Show error notification with retry option
+                retry = QMessageBox.question(self, "Download Failed", 
+                                           "The resumed download failed. Would you like to retry?",
+                                           QMessageBox.Yes | QMessageBox.No)
+                if retry == QMessageBox.Yes:
+                    # Restart the download
+                    thread = self.active_resume_downloads[idx]['thread']
+                    url = thread.downloader.url
+                    output_path = thread.downloader.output_path
+                    
+                    # Determine the downloader type
+                    if hasattr(thread.downloader, 'format_type'):
+                        # YouTube downloader
+                        format_type = thread.downloader.format_type
+                        downloader = YoutubeDownloader(url, output_path=output_path, format_type=format_type)
+                    else:
+                        # HTTP downloader
+                        downloader = HttpDownloader(url, output_path=output_path)
+                    
+                    # Create new thread
+                    new_thread = DownloadThread(downloader)
+                    new_thread.progress_updated.connect(lambda progress, i=idx: self.update_resume_progress(progress, i))
+                    new_thread.download_complete.connect(lambda success, i=idx: self.resume_download_finished(success, i))
+                    new_thread.start()
+                    
+                    # Update references
+                    self.active_resume_downloads[idx]['thread'] = new_thread
+                    self.active_resume_downloads[idx]['status'].setText("Retrying download...")
+                    return
+                    
             self.active_resume_downloads[idx]['pause_btn'].setEnabled(False)
             self.active_resume_downloads[idx]['stop_btn'].setEnabled(False)
         
@@ -1000,33 +1227,15 @@ class MainWindow(QMainWindow):
             
         self.resume_list.takeItem(self.resume_list.row(list_item))
 
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Modern Download Manager")
-        self.setMinimumSize(800, 600)
-        self.setWindowIcon(QIcon("resources/icons/app_icon.svg"))
 
-        # Main widget and layout
-        self.main_widget = QWidget()
-        self.setCentralWidget(self.main_widget)
-        self.main_layout = QVBoxLayout(self.main_widget)
+    def update_tab_titles(self):
+        """Update tab titles to reflect current download status"""
+        http_downloads = len([d for d in getattr(self, 'active_http_downloads', []) if d['thread'].isRunning()])
+        yt_downloads = len([d for d in getattr(self, 'active_yt_downloads', []) if d['thread'].isRunning()])
         
-        # Create header with theme toggle
-        self.create_header()
-
-        # Create tabs
-        self.tabs = QTabWidget()
-        self.main_layout.addWidget(self.tabs)
-
-        # HTTP Download Tab
-        self.create_http_tab()
-        # YouTube Download Tab
-        self.create_youtube_tab()
-        # Resume Downloads Tab
-        self.create_resume_tab()
-
-        # Apply styles
-        self.load_styles()
+        self.tabs.setTabText(0, f"HTTP Download ({http_downloads} active)")
+        self.tabs.setTabText(1, f"YouTube Download ({yt_downloads} active)")
+        self.tabs.setTabText(2, "Resume Downloads")
 
 
 if __name__ == "__main__":
