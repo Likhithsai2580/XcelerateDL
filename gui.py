@@ -354,6 +354,47 @@ class MainWindow(QMainWindow):
                         logger.error(f"Error processing download state: {e}")
                         continue
 
+            # Process YouTube downloads
+            if hasattr(self, 'active_yt_downloads'):
+                for download in self.active_yt_downloads:
+                    try:
+                        # Calculate actual progress percentage
+                        progress = download['progress'].value()
+                        
+                        # Get additional information from the downloader
+                        downloader = download['thread'].downloader
+                        format_type = getattr(downloader, 'format_type', 'video')
+                        
+                        download_info = {
+                            "type": "youtube",
+                            "url": downloader.url,
+                            "progress": progress,
+                            "status": download['status'].text(),
+                            "timestamp": time.time(),
+                            "output_path": str(downloader.output_path),
+                            "format_type": format_type
+                        }
+                        
+                        # Add title if available
+                        if hasattr(downloader, 'title') and downloader.title:
+                            download_info["title"] = downloader.title
+
+                        if "completed successfully" in download['status'].text():
+                            history["completed"].append(download_info)
+                        else:
+                            # Update existing incomplete entry if it exists
+                            updated = False
+                            for i, inc in enumerate(history["incomplete"]):
+                                if inc.get("url") == download_info["url"] and inc.get("type") == "youtube":
+                                    history["incomplete"][i] = download_info
+                                    updated = True
+                                    break
+                            if not updated:
+                                history["incomplete"].append(download_info)
+                    except Exception as e:
+                        logger.error(f"Error processing YouTube download state: {e}")
+                        continue
+
             # Save updated history
             self.save_downloads_history(history)
 
