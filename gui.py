@@ -227,6 +227,8 @@ class DownloadThread(QThread):
         if not self.is_paused and self.isRunning():
             self.is_paused = True
             self.downloader.pause_download()
+            # Save download state immediately when paused
+            self.parent().save_download_states()
             self.paused.emit()
 
     def resume_download(self):
@@ -863,14 +865,21 @@ class MainWindow(QMainWindow):
 
     def yt_download_finished(self, success, idx):
         if idx < len(self.active_yt_downloads):
+            downloader = self.active_yt_downloads[idx]['thread'].downloader
+            if downloader.stopped.is_set():
+                # Download was paused, don't show error dialog
+                self.active_yt_downloads[idx]['status'].setText("Download paused")
+                self.active_yt_downloads[idx]['pause_btn'].hide()
+                return
+            
             if success:
-                self.active_yt_downloads[idx]['status'].setText("YouTube download completed successfully")
+                self.active_yt_downloads[idx]['status'].setText("Download completed successfully")
                 self.active_yt_downloads[idx]['progress'].setValue(100)  # Ensure progress shows 100%
                 # Show a notification
                 QMessageBox.information(self, "Download Complete", 
                                       f"The YouTube download has completed successfully.\n\nFile: {self.active_yt_downloads[idx]['thread'].downloader.output_path}")
             else:
-                self.active_yt_downloads[idx]['status'].setText("YouTube download failed")
+                self.active_yt_downloads[idx]['status'].setText("Download failed")
                 # Show error notification with retry option
                 retry = QMessageBox.question(self, "Download Failed", 
                                            "The YouTube download failed. Would you like to retry?",
@@ -893,7 +902,7 @@ class MainWindow(QMainWindow):
                     self.active_yt_downloads[idx]['thread'] = new_thread
                     self.active_yt_downloads[idx]['status'].setText("Retrying download...")
                     return
-                    
+                        
             # Hide pause button when download is complete
             self.active_yt_downloads[idx]['pause_btn'].hide()
         
