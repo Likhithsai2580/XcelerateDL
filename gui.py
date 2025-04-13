@@ -3,7 +3,6 @@ import time
 import os
 import json
 import threading
-import requests
 from pathlib import Path
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                            QLineEdit, QPushButton, QProgressBar, QLabel, QTabWidget,
@@ -14,8 +13,8 @@ from PyQt5.QtGui import QIcon
 from idm import HttpDownloader, logger
 from pytubefix import YouTube
 from pytubefix.exceptions import PytubeFixError as PytubeError
-from requests.exceptions import RequestException
-
+from curl_cffi import requests as curl_requests
+from curl_cffi.requests.errors import RequestsError
 
 class YoutubeDownloader:
     def __init__(self, url, output_path, num_threads=4, format_type='video', progress_callback=None):
@@ -30,7 +29,7 @@ class YoutubeDownloader:
         self.total_size = 0
         self.downloaded_size = 0
         self.lock = threading.Lock()
-        self.session = requests.Session()
+        self.session = curl_requests.Session()
         self.title = ""
         self.download_url = ""
         self.progress_callback = progress_callback
@@ -54,11 +53,14 @@ class YoutubeDownloader:
             raise RuntimeError(f"Error accessing YouTube video: {e}")
 
     def _get_total_size(self):
-        response = self.session.head(self.download_url, allow_redirects=True)
-        response.raise_for_status()
-        self.total_size = int(response.headers.get('Content-Length', 0))
-        if self.total_size == 0:
-            raise RuntimeError("Unable to determine file size.")
+        try:
+            resp = self.session.head(self.download_url, allow_redirects=True, impersonate="chrome110")
+            self.total_size = int(resp.headers.get('Content-Length', 0))
+            if self.total_size == 0:
+                raise RuntimeError("Unable to determine file size.")
+            resp.close()
+        except RequestsError as e:
+            raise RuntimeError(f"Connection failed: {e}")
 
     def _initialize_chunks(self):
         chunk_size = self.total_size // self.num_threads
@@ -105,21 +107,31 @@ class YoutubeDownloader:
 
         headers = {'Range': f'bytes={start}-{end}'}
         try:
-            response = self.session.get(self.download_url, headers=headers, stream=True, timeout=10)
-            response.raise_for_status()
-        except RequestException as e:
-            print(f"Error downloading chunk {chunk_index}: {e}")
-            return
+            resp = self.session.get(
+                self.download_url, 
+                headers=headers, 
+                stream=True, 
+                timeout=30,
+                impersonate="chrome110",
+                verify=False
+            )
+            resp.raise_for_status()
 
-        with open(self.temp_file, 'rb+') as f:
-            f.seek(start)
-            for data in response.iter_content(chunk_size=8192):
-                if self.stopped.is_set():
-                    break
-                with self.lock:
-                    f.write(data)
-                    chunk['downloaded'] += len(data)
-                    self.downloaded_size += len(data)
+            with open(self.temp_file, 'rb+') as f:
+                f.seek(start)
+                for data in resp.iter_bytes(chunk_size=8192):
+                    if self.stopped.is_set():
+                        break
+                    with self.lock:
+                        f.write(data)
+                        chunk['downloaded'] += len(data)
+                        self.downloaded_size += len(data)
+            resp.close()
+        except RequestsError as e:
+            print(f"Error downloading chunk {chunk_index}: {e}")
+        finally:
+            if 'resp' in locals():
+                resp.close()  # Ensure response is closed
 
     def _combine_chunks(self):
         if os.path.exists(self.output_path):
@@ -200,10 +212,11 @@ class DownloadThread(QThread):
     paused = pyqtSignal()
     resumed = pyqtSignal()
 
-    def __init__(self, downloader):
-        super().__init__()
+    def __init__(self, downloader, parent=None):
+        super().__init__(parent)
         self.downloader = downloader
         self.is_paused = False
+        self._main_window = parent
         
         # Set up a direct callback that emits the signal
         def emit_progress(progress_data):
@@ -228,7 +241,8 @@ class DownloadThread(QThread):
             self.is_paused = True
             self.downloader.pause_download()
             # Save download state immediately when paused
-            self.parent().save_download_states()
+            if self._main_window:
+                self._main_window.save_download_states()
             self.paused.emit()
 
     def resume_download(self):
