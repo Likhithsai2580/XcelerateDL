@@ -3,7 +3,6 @@ import time
 import os
 import json
 import threading
-import requests
 from pathlib import Path
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                            QLineEdit, QPushButton, QProgressBar, QLabel, QTabWidget,
@@ -14,8 +13,13 @@ from PyQt5.QtGui import QIcon
 from idm import HttpDownloader, logger
 from pytubefix import YouTube
 from pytubefix.exceptions import PytubeFixError as PytubeError
-from requests.exceptions import RequestException
-
+from curl_cffi import requests as curl_requests
+from curl_cffi.requests.errors import RequestsError
+from moviepy.video.io.VideoFileClip import VideoFileClip
+from moviepy.video.VideoClip import TextClip
+from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+from moviepy import concatenate_videoclips
+from moviepy.audio.io.AudioFileClip import AudioFileClip
 
 class YoutubeDownloader:
     def __init__(self, url, output_path, num_threads=4, format_type='video', progress_callback=None):
@@ -30,35 +34,74 @@ class YoutubeDownloader:
         self.total_size = 0
         self.downloaded_size = 0
         self.lock = threading.Lock()
-        self.session = requests.Session()
+        self.session = curl_requests.Session()
         self.title = ""
         self.download_url = ""
         self.progress_callback = progress_callback
+        
+        # For separate video and audio downloads
+        self.video_file = None
+        self.audio_file = None
+        self.video_size = 0
+        self.audio_size = 0
 
     def select_stream(self):
         try:
             yt = YouTube(self.url)
+            self.title = yt.title
+            
             if self.format_type == 'audio':
+                # For audio-only, get the highest quality audio stream
                 streams = yt.streams.filter(only_audio=True).order_by('abr').desc()
                 if not streams:
                     raise ValueError("No audio streams available.")
                 self.selected_stream = streams[0]
+                self.download_url = self.selected_stream.url
             else:
-                self.selected_stream = yt.streams.get_highest_resolution()
-                if not self.selected_stream:
-                    raise ValueError("No video streams available.")
-            
-            self.download_url = self.selected_stream.url
-            self.title = yt.title
+                # For video, we'll download the highest quality video and audio separately
+                # Get the highest quality video stream (without audio)
+                video_streams = yt.streams.filter(adaptive=True, file_extension='mp4', only_video=True).order_by('resolution').desc()
+                if not video_streams:
+                    # Fallback to progressive stream if no adaptive streams available
+                    self.selected_stream = yt.streams.get_highest_resolution()
+                    if not self.selected_stream:
+                        raise ValueError("No video streams available.")
+                    self.download_url = self.selected_stream.url
+                    return
+                    
+                # Get the highest quality audio stream
+                audio_streams = yt.streams.filter(only_audio=True).order_by('abr').desc()
+                if not audio_streams:
+                    raise ValueError("No audio streams available.")
+                
+                # Set up video and audio streams
+                self.video_stream = video_streams[0]
+                self.audio_stream = audio_streams[0]
+                
+                # Set up temporary file paths
+                base_path = os.path.splitext(self.output_path)[0]
+                self.video_file = f"{base_path}_video_temp.mp4"
+                self.audio_file = f"{base_path}_audio_temp.mp4"
+                
+                # For progress tracking, we'll use the combined size
+                self.video_size = int(self.video_stream.filesize)
+                self.audio_size = int(self.audio_stream.filesize)
+                self.total_size = self.video_size + self.audio_size
+                
+                # For compatibility with existing code, set download_url to video stream
+                self.download_url = self.video_stream.url
         except PytubeError as e:
             raise RuntimeError(f"Error accessing YouTube video: {e}")
 
     def _get_total_size(self):
-        response = self.session.head(self.download_url, allow_redirects=True)
-        response.raise_for_status()
-        self.total_size = int(response.headers.get('Content-Length', 0))
-        if self.total_size == 0:
-            raise RuntimeError("Unable to determine file size.")
+        try:
+            resp = self.session.head(self.download_url, allow_redirects=True, impersonate="chrome110")
+            self.total_size = int(resp.headers.get('Content-Length', 0))
+            if self.total_size == 0:
+                raise RuntimeError("Unable to determine file size.")
+            resp.close()
+        except RequestsError as e:
+            raise RuntimeError(f"Connection failed: {e}")
 
     def _initialize_chunks(self):
         chunk_size = self.total_size // self.num_threads
@@ -105,21 +148,31 @@ class YoutubeDownloader:
 
         headers = {'Range': f'bytes={start}-{end}'}
         try:
-            response = self.session.get(self.download_url, headers=headers, stream=True, timeout=10)
-            response.raise_for_status()
-        except RequestException as e:
-            print(f"Error downloading chunk {chunk_index}: {e}")
-            return
+            resp = self.session.get(
+                self.download_url, 
+                headers=headers, 
+                stream=True, 
+                timeout=30,
+                impersonate="chrome110",
+                verify=False
+            )
+            resp.raise_for_status()
 
-        with open(self.temp_file, 'rb+') as f:
-            f.seek(start)
-            for data in response.iter_content(chunk_size=8192):
-                if self.stopped.is_set():
-                    break
-                with self.lock:
-                    f.write(data)
-                    chunk['downloaded'] += len(data)
-                    self.downloaded_size += len(data)
+            with open(self.temp_file, 'rb+') as f:
+                f.seek(start)
+                for data in resp.iter_bytes(chunk_size=8192):
+                    if self.stopped.is_set():
+                        break
+                    with self.lock:
+                        f.write(data)
+                        chunk['downloaded'] += len(data)
+                        self.downloaded_size += len(data)
+            resp.close()
+        except RequestsError as e:
+            print(f"Error downloading chunk {chunk_index}: {e}")
+        finally:
+            if 'resp' in locals():
+                resp.close()  # Ensure response is closed
 
     def _combine_chunks(self):
         if os.path.exists(self.output_path):
@@ -128,6 +181,143 @@ class YoutubeDownloader:
         if os.path.exists(self.progress_file):
             os.remove(self.progress_file)
 
+    def _download_video_audio(self):
+        """Download video and audio streams separately"""
+        try:
+            # Download video stream
+            print(f"Downloading video stream for {self.title}...")
+            video_start_time = time.time()
+            video_downloaded = 0
+             
+             # Custom progress callback for video download
+            def video_progress_callback(stream, chunk, bytes_remaining):
+                nonlocal video_downloaded
+                video_downloaded = self.video_size - bytes_remaining
+                video_progress = (video_downloaded / self.video_size) * 25  # 0-25% range
+                video_speed = video_downloaded / (time.time() - video_start_time + 0.1) / 1024
+                 
+                if self.progress_callback:
+                    self.progress_callback({
+                        'percent': video_progress,
+                        'speed': f"{video_speed:.2f} KB/s (Video)"
+                    })
+             
+             # Set up callback and download video
+            self.video_stream.on_progress = video_progress_callback
+            self.video_stream.download(output_path=os.path.dirname(self.video_file), filename=os.path.basename(self.video_file))
+            
+            # Download audio stream
+            print(f"Downloading audio stream for {self.title}...")
+            
+            # Set up progress tracking for audio download (25-50%)
+            audio_start_time = time.time()
+            audio_downloaded = 0
+            
+            # Custom progress callback for audio download
+            def audio_progress_callback(stream, chunk, bytes_remaining):
+                nonlocal audio_downloaded
+                audio_downloaded = self.audio_size - bytes_remaining
+                audio_progress = 25 + (audio_downloaded / self.audio_size) * 25  # 25-50% range
+                audio_speed = audio_downloaded / (time.time() - audio_start_time + 0.1) / 1024
+                
+                if self.progress_callback:
+                    self.progress_callback({
+                        'percent': audio_progress,
+                        'speed': f"{audio_speed:.2f} KB/s (Audio)"
+                    })
+            
+            # Set up callback and download audio
+            self.audio_stream.on_progress = audio_progress_callback
+            self.audio_stream.download(output_path=os.path.dirname(self.audio_file), filename=os.path.basename(self.audio_file))
+            
+            return True
+        except Exception as e:
+            print(f"Error downloading streams: {e}")
+            return False
+    
+    def _monitor_merge_progress(self, start_time, duration):
+        """Monitor progress of the merging process and update UI"""
+        last_update_time = start_time
+        
+        while not self.stopped.is_set():
+            current_time = time.time()
+            # Update progress every 200ms
+            if current_time - last_update_time >= 0.2:
+                elapsed = current_time - start_time
+                # Estimate progress between 50-95% (final 5% for file operations)
+                estimated_progress = min(95, 50 + (elapsed / max(1, duration)) * 45)
+                
+                if self.progress_callback:
+                    self.progress_callback({
+                        'percent': estimated_progress,
+                        'speed': f"Merging: {min(100, int((elapsed / max(1, duration * 1.5)) * 100))}%"
+                    })
+                
+                last_update_time = current_time
+            
+            # Sleep to avoid high CPU usage
+            time.sleep(0.1)
+    
+    def _merge_video_audio(self):
+        """Merge video and audio using moviepy"""
+        try:
+            print(f"Merging video and audio for {self.title}...")
+            video_clip = VideoFileClip(self.video_file)
+            audio_clip = AudioFileClip(self.audio_file)
+            
+            # Create a new clip with audio using the correct API
+            final_clip = video_clip.copy()
+            final_clip.audio = audio_clip
+            
+            # Set up progress tracking for merging process (50-100%)
+            merge_start_time = time.time()
+            
+            # Reset the stopped flag before starting the progress thread
+            self.stopped.clear()
+            
+            # Create a separate thread to monitor progress since callback isn't supported
+            progress_thread = threading.Thread(
+                target=self._monitor_merge_progress,
+                args=(merge_start_time, video_clip.duration)
+            )
+            progress_thread.daemon = True
+            progress_thread.start()
+            
+            # Write the file without callback parameter
+            final_clip.write_videofile(
+                self.output_path, 
+                codec='libx264', 
+                audio_codec='aac',
+                logger=None  # Disable default logger
+            )
+            
+            # Stop the progress monitoring
+            self.stopped.set()
+            progress_thread.join(timeout=1)
+            
+            # Close the clips to release resources
+            video_clip.close()
+            audio_clip.close()
+            final_clip.close()
+            
+            # Clean up temporary files
+            if os.path.exists(self.video_file):
+                os.remove(self.video_file)
+            if os.path.exists(self.audio_file):
+                os.remove(self.audio_file)
+            
+            # Final 100% progress update
+            if self.progress_callback:
+                self.progress_callback({
+                    'percent': 100,
+                    'speed': "Complete"
+                })
+                
+            return True
+        except Exception as e:
+            print(f"Error merging video and audio: {e}")
+            return False
+    
     def start_download(self):
         try:
             resume = self._load_progress()
@@ -138,47 +328,82 @@ class YoutubeDownloader:
                     self.select_stream()
             else:
                 self.select_stream()
-                self._get_total_size()
-                self._initialize_chunks()
-                with open(self.temp_file, 'wb') as f:
-                    f.seek(self.total_size - 1)
-                    f.write(b'\0')
-                print(f"Starting download for {self.title}...")
-
-            threads = []
-            for i in range(len(self.chunks)):
-                thread = threading.Thread(target=self._download_chunk, args=(i,))
-                threads.append(thread)
-
-            for thread in threads:
-                thread.start()
-
-            last_save_time = time.time()
-            while any(thread.is_alive() for thread in threads):
-                time.sleep(0.5)
-                progress = (self.downloaded_size / self.total_size) * 100
-                speed = self.downloaded_size / (time.time() - last_save_time + 0.1) / 1024
-                if self.progress_callback:
-                    self.progress_callback({
-                        'percent': progress,
-                        'speed': f"{speed:.2f} KB/s"
-                    })
                 
-                current_time = time.time()
-                if current_time - last_save_time >= 1:
-                    self._save_progress()
-                    last_save_time = current_time
+                # For audio-only or if we're using the fallback progressive stream
+                if self.format_type == 'audio' or not hasattr(self, 'video_stream'):
+                    self._get_total_size()
+                    self._initialize_chunks()
+                    with open(self.temp_file, 'wb') as f:
+                        f.seek(self.total_size - 1)
+                        f.write(b'\0')
+                    print(f"Starting download for {self.title}...")
 
-            for thread in threads:
-                thread.join()
+                    threads = []
+                    for i in range(len(self.chunks)):
+                        thread = threading.Thread(target=self._download_chunk, args=(i,))
+                        threads.append(thread)
 
-            if not self.stopped.is_set():
-                self._combine_chunks()
-                print("\nDownload completed successfully.")
-                return True
-            else:
-                print("\nDownload paused. Resume later.")
-                return False
+                    for thread in threads:
+                        thread.start()
+
+                    last_save_time = time.time()
+                    while any(thread.is_alive() for thread in threads):
+                        time.sleep(0.5)
+                        progress = (self.downloaded_size / self.total_size) * 100
+                        speed = self.downloaded_size / (time.time() - last_save_time + 0.1) / 1024
+                        if self.progress_callback:
+                            self.progress_callback({
+                                'percent': progress,
+                                'speed': f"{speed:.2f} KB/s"
+                            })
+                        
+                        current_time = time.time()
+                        if current_time - last_save_time >= 1:
+                            self._save_progress()
+                            last_save_time = current_time
+
+                    for thread in threads:
+                        thread.join()
+
+                    if not self.stopped.is_set():
+                        self._combine_chunks()
+                        print("\nDownload completed successfully.")
+                        return True
+                    else:
+                        print("\nDownload paused. Resume later.")
+                        return False
+                else:
+                    # For high quality video, download video and audio separately then merge
+                    print(f"Starting high quality download for {self.title}...")
+                    
+                    # Track progress for separate downloads
+                    current_progress = 0
+                    
+                    # Download video and audio (50% of total progress)
+                    if self._download_video_audio():
+                        current_progress = 50
+                        if self.progress_callback:
+                            self.progress_callback({
+                                'percent': current_progress,
+                                'speed': "Merging..."
+                            })
+                        
+                        # Merge video and audio (remaining 50% of progress)
+                        if self._merge_video_audio():
+                            if self.progress_callback:
+                                self.progress_callback({
+                                    'percent': 100,
+                                    'speed': "Complete"
+                                })
+                            print("\nHigh quality download completed successfully.")
+                            return True
+                    
+                    if self.stopped.is_set():
+                        print("\nDownload paused. Resume later.")
+                        return False
+                    else:
+                        print("\nHigh quality download failed.")
+                        return False
 
         except Exception as e:
             self.stopped.set()
@@ -200,10 +425,11 @@ class DownloadThread(QThread):
     paused = pyqtSignal()
     resumed = pyqtSignal()
 
-    def __init__(self, downloader):
-        super().__init__()
+    def __init__(self, downloader, parent=None):
+        super().__init__(parent)
         self.downloader = downloader
         self.is_paused = False
+        self._main_window = parent
         
         # Set up a direct callback that emits the signal
         def emit_progress(progress_data):
@@ -228,7 +454,8 @@ class DownloadThread(QThread):
             self.is_paused = True
             self.downloader.pause_download()
             # Save download state immediately when paused
-            self.parent().save_download_states()
+            if self._main_window:
+                self._main_window.save_download_states()
             self.paused.emit()
 
     def resume_download(self):
@@ -838,30 +1065,71 @@ class MainWindow(QMainWindow):
             # Convert percent to integer before setting value
             percent = int(progress.get('percent', 0)) if isinstance(progress, dict) else 0
             self.active_yt_downloads[idx]['progress'].setValue(percent)
-            # Add remaining time estimate if download is progressing
-            if percent > 0 and percent < 100 and isinstance(progress, dict) and 'speed' in progress:
-                speed_kbps = float(progress['speed'].split()[0])
-                if speed_kbps > 0:
-                    # Calculate estimated time remaining
-                    total_size = self.active_yt_downloads[idx]['thread'].downloader.total_size
-                    downloaded = total_size * (percent / 100)
-                    remaining = total_size - downloaded
-                    seconds_left = remaining / (speed_kbps * 1024)
+            
+            # Update status text with speed or phase information
+            status_text = ""
+            if isinstance(progress, dict) and 'speed' in progress:
+                speed_info = progress['speed']
+                
+                # Handle special status messages like "Merging..." or "Complete"
+                if isinstance(speed_info, str) and not speed_info.replace('.', '', 1).isdigit():
+                    status_text = f"Status: {speed_info}"
                     
-                    # Format time remaining
-                    if seconds_left < 60:
-                        time_str = f"{seconds_left:.0f} seconds"
-                    elif seconds_left < 3600:
-                        time_str = f"{seconds_left/60:.1f} minutes"
-                    else:
-                        time_str = f"{seconds_left/3600:.1f} hours"
-                    
-                    self.active_yt_downloads[idx]['status'].setText(
-                        f"Downloading: {progress['speed']} - ETA: {time_str}")
+                    # For merging phase, implement incremental progress updates
+                    if "Merging" in speed_info and percent == 50:
+                        # Start a timer to simulate progress during merging
+                        if not hasattr(self.active_yt_downloads[idx], 'merge_timer'):
+                            self.active_yt_downloads[idx]['merge_start_time'] = time.time()
+                            self.active_yt_downloads[idx]['merge_timer'] = True
+                            
+                            # Create a timer to update progress during merging
+                            def update_merge_progress():
+                                if idx < len(self.active_yt_downloads) and percent < 100:
+                                    elapsed = time.time() - self.active_yt_downloads[idx]['merge_start_time']
+                                    # Simulate progress from 50% to 95% over approximately 30 seconds
+                                    simulated_progress = min(95, 50 + int(elapsed / 30 * 45))
+                                    self.active_yt_downloads[idx]['progress'].setValue(simulated_progress)
+                                    
+                                    # Continue updating until we reach 95% or the actual process completes
+                                    if simulated_progress < 95 and idx < len(self.active_yt_downloads):
+                                        QApplication.processEvents()  # Keep UI responsive
+                                        threading.Timer(0.5, update_merge_progress).start()
+                            
+                            # Start the progress update timer
+                            threading.Timer(0.5, update_merge_progress).start()
                 else:
-                    self.active_yt_downloads[idx]['status'].setText(f"Downloading: {progress['speed']}")
-            else:
-                self.active_yt_downloads[idx]['status'].setText(f"Downloading: {progress['speed']}")
+                    # For normal download progress with speed information
+                    try:
+                        speed_text = str(speed_info)
+                        if speed_text.replace('.', '', 1).isdigit():
+                            speed_kbps = float(speed_text)
+                            status_text = f"Speed: {speed_kbps:.2f} KB/s"
+                            
+                            # Calculate estimated time remaining if we have size information
+                            if hasattr(self.active_yt_downloads[idx]['thread'].downloader, 'total_size'):
+                                total_size = self.active_yt_downloads[idx]['thread'].downloader.total_size
+                                if total_size > 0:
+                                    downloaded = total_size * (percent / 100)
+                                    remaining = total_size - downloaded
+                                    if speed_kbps > 0:
+                                        eta_seconds = remaining / (speed_kbps * 1024)
+                                        if eta_seconds < 60:
+                                            status_text += f" | ETA: {int(eta_seconds)} sec"
+                                        elif eta_seconds < 3600:
+                                            status_text += f" | ETA: {int(eta_seconds/60)} min"
+                                        else:
+                                            status_text += f" | ETA: {eta_seconds/3600:.1f} hr"
+                        else:
+                            status_text = f"Status: {speed_info}"
+                    except (ValueError, TypeError):
+                        status_text = f"Status: {speed_info}"
+            
+            # Update the status label
+            if status_text:
+                self.active_yt_downloads[idx]['status'].setText(status_text)
+            
+            # Force UI update to ensure smooth progress bar updates
+            QApplication.processEvents()
 
     def yt_download_finished(self, success, idx):
         if idx < len(self.active_yt_downloads):
