@@ -1,5 +1,7 @@
 # XcelerateDL - Fast Download Manager API
 
+![XcelerateDL](docs/asset/image.png)
+
 XcelerateDL is a modern download manager API built with FastAPI and Python. It provides a robust backend for managing downloads with features similar to Internet Download Manager (IDM).
 
 ## Features
