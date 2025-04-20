@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XcelerateDL - Smart Download Manager</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <i class="fa-solid fa-bolt-lightning logo-icon"></i>
+                <span>XcelerateDL</span>
+            </div>
+            <nav class="main-menu">
+                <ul>
+                    <li><a href="#"><i class="fa-regular fa-file"></i> File</a></li>
+                    <li><a href="#"><i class="fa-solid fa-list-check"></i> Tasks</a></li>
+                    <li><a href="#"><i class="fa-solid fa-screwdriver-wrench"></i> Tools</a></li>
+                    <li><a href="#"><i class="fa-regular fa-circle-question"></i> Help</a></li>
+                </ul>
+            </nav>
+            <div class="search-container">
+                <div class="search-box">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" placeholder="Search downloads...">
+                </div>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <div class="main-content">
+            <!-- Sidebar -->
+            <div class="sidebar">
+                <div class="category-group">
+                    <div class="category-item active" data-category="all">
+                        <i class="fa-solid fa-folder"></i>
+                        <span>All Downloads</span>
+                        <i class="fa-solid fa-chevron-down dropdown-icon"></i>
+                    </div>
+                    <div class="subcategory">
+                        <div class="category-item" data-category="compressed">
+                            <i class="fa-solid fa-file-zipper"></i>
+                            <span>Compressed</span>
+                        </div>
+                        <div class="category-item" data-category="programs">
+                            <i class="fa-solid fa-microchip"></i>
+                            <span>Programs</span>
+                        </div>
+                        <div class="category-item" data-category="videos">
+                            <i class="fa-solid fa-film"></i>
+                            <span>Videos</span>
+                        </div>
+                        <div class="category-item" data-category="music">
+                            <i class="fa-solid fa-music"></i>
+                            <span>Music</span>
+                        </div>
+                        <div class="category-item" data-category="pictures">
+                            <i class="fa-solid fa-image"></i>
+                            <span>Pictures</span>
+                        </div>
+                        <div class="category-item" data-category="documents">
+                            <i class="fa-solid fa-file-lines"></i>
+                            <span>Documents</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="category-group">
+                    <div class="category-item" data-status="completed">
+                        <i class="fa-solid fa-circle-check"></i>
+                        <span>Finished</span>
+                        <i class="fa-solid fa-chevron-down dropdown-icon"></i>
+                    </div>
+                </div>
+                <div class="category-group">
+                    <div class="category-item" data-status="queued,downloading,paused">
+                        <i class="fa-solid fa-spinner"></i>
+                        <span>In Progress</span>
+                        <i class="fa-solid fa-chevron-down dropdown-icon"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Content area -->
+            <div class="content-area">
+                <!-- Toolbar -->
+                <div class="toolbar">
+                    <button class="toolbar-button new-download-btn">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>New Download</span>
+                    </button>
+                    <button class="toolbar-button" data-action="resume">
+                        <i class="fa-solid fa-play"></i>
+                        <span>Resume</span>
+                    </button>
+                    <button class="toolbar-button" data-action="pause">
+                        <i class="fa-solid fa-pause"></i>
+                        <span>Pause</span>
+                    </button>
+                    <button class="toolbar-button" data-action="start-queue">
+                        <i class="fa-solid fa-list-check"></i>
+                        <span>Start Queue</span>
+                    </button>
+                    <button class="toolbar-button" data-action="stop-queue">
+                        <i class="fa-solid fa-stop"></i>
+                        <span>Stop Queue</span>
+                    </button>
+                    <button class="toolbar-button" data-action="queues">
+                        <i class="fa-solid fa-layer-group"></i>
+                        <span>Queues</span>
+                    </button>
+                    <button class="toolbar-button" data-action="stop-all">
+                        <i class="fa-solid fa-hand"></i>
+                        <span>Stop All</span>
+                    </button>
+                    <button class="toolbar-button" data-action="delete">
+                        <i class="fa-solid fa-trash"></i>
+                        <span>Delete</span>
+                    </button>
+                    <button class="toolbar-button" data-action="settings">
+                        <i class="fa-solid fa-gear"></i>
+                        <span>Settings</span>
+                    </button>
+                </div>
+
+                <!-- Download list -->
+                <div class="download-list">
+                    <div class="download-list-header">
+                        <div class="header-checkbox">
+                            <input type="checkbox" id="select-all">
+                        </div>
+                        <div class="header-cell header-name">Name</div>
+                        <div class="header-cell header-size">Size</div>
+                        <div class="header-cell header-status">Status</div>
+                        <div class="header-cell header-speed">Speed</div>
+                        <div class="header-cell header-time">Time Left</div>
+                        <div class="header-cell header-date">Date Added</div>
+                    </div>
+                    <div class="download-list-body" id="downloads-container">
+                        <!-- Download items will be populated here dynamically -->
+                        <div class="empty-list-message">
+                            <i class="fa-solid fa-cloud-arrow-down fa-3x"></i>
+                            <p>Your download list is empty</p>
+                            <button class="btn-primary start-downloading-btn">
+                                <i class="fa-solid fa-plus"></i> Add New Download
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Status bar -->
+                <div class="status-bar">
+                    <div class="status-item">
+                        <i class="fa-solid fa-file-download"></i>
+                        <span id="total-downloads">0</span> Total Downloads
+                    </div>
+                    <div class="status-item">
+                        <i class="fa-solid fa-arrow-down"></i>
+                        <span id="active-downloads">0</span> Active
+                    </div>
+                    <div class="status-item">
+                        <i class="fa-solid fa-gauge-high"></i>
+                        <span id="download-speed">0 B/s</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Download Modal -->
+    <div class="modal" id="new-download-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2><i class="fa-solid fa-plus-circle"></i> Add New Download</h2>
+                <button class="close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="new-download-form">
+                    <div class="form-group">
+                        <label for="download-url"><i class="fa-solid fa-link"></i> URL:</label>
+                        <input type="url" id="download-url" name="url" required
+                            placeholder="https://example.com/file.zip">
+                    </div>
+                    <div class="form-group">
+                        <label for="download-filename"><i class="fa-regular fa-file"></i> Filename (optional):</label>
+                        <input type="text" id="download-filename" name="filename" placeholder="my-awesome-file.zip">
+                    </div>
+                    <div class="form-group">
+                        <label for="download-path"><i class="fa-solid fa-folder"></i> Save Path (optional):</label>
+                        <input type="text" id="download-path" name="save_path" placeholder="C:\Downloads\">
+                    </div>
+                    <div class="form-group">
+                        <label for="download-category"><i class="fa-solid fa-tag"></i> Category:</label>
+                        <select id="download-category" name="category">
+                            <option value="">Auto Detect</option>
+                            <option value="compressed">Compressed</option>
+                            <option value="programs">Programs</option>
+                            <option value="videos">Videos</option>
+                            <option value="music">Music</option>
+                            <option value="pictures">Pictures</option>
+                            <option value="documents">Documents</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary close-modal">Cancel</button>
+                        <button type="submit" class="btn-primary">
+                            <i class="fa-solid fa-download"></i> Start Download
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', path='/js/script.js') }}"></script>
+</body>
+
+</html>

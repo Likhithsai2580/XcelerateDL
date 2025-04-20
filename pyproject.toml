@@ -1,0 +1,34 @@
+[project]
+name = "xceleratedl-s2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiofiles>=24.1.0",
+    "aiohttp>=3.11.17",
+    "fastapi>=0.115.12",
+    "jinja2>=3.1.6",
+    "pydantic>=2.11.3",
+    "python-multipart>=0.0.20",
+    "uvicorn[standard]>=0.34.2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+select = [
+    "E",
+    "F",
+    "I",
+    "N",
+    "W",
+    "B",
+    "C4",
+    "UP",
+    "SIM",
+    "TID",
+    "E721",
+    "TID252",
+]
+fixable = ["ALL"]
