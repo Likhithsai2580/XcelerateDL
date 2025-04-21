@@ -343,9 +343,9 @@ body {
 
 .download-item {
     display: flex;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
-    font-size: 0.9rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.95rem;
     transition: var(--hover-transition);
     background-color: var(--bg-card);
     border-radius: 8px;
@@ -378,40 +378,45 @@ body {
     cursor: pointer;
 }
 
-.download-cell {
-    padding: 0 0.5rem;
+.item-cell {
+    padding: 0 0.75rem;
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    justify-content: center;
 }
 
-.download-name {
+.item-name {
     flex: 3;
     font-weight: 500;
+    padding-left: 0.5rem;
 }
 
-.download-size,
-.download-status,
-.download-speed,
-.download-time,
-.download-date {
+.item-name i {
+    margin-right: 8px;
+    color: var(--primary-light);
+}
+
+.item-size, .item-status, .item-speed, .item-time, .item-date {
     flex: 1;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.progress-bar-container {
+    width: 100%;
+    height: 8px;
+    background-color: rgba(240, 240, 240, 0.1);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 6px;
 }
 
 .progress-bar {
-    height: 6px;
-    background-color: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
-    overflow: hidden;
-    margin-top: 5px;
-    width: 100%;
-}
-
-.progress-fill {
     height: 100%;
-    background: linear-gradient(to right, var(--primary-color), var(--primary-light));
-    border-radius: 3px;
+    border-radius: 4px;
     transition: width 0.3s ease;
-    width: 0%;
 }
 
 .status-queued {
@@ -432,6 +437,42 @@ body {
 
 .status-failed {
     color: var(--error-color);
+}
+
+.status-badge {
+    display: inline-flex;
+    flex-direction: column;
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 0.85rem;
+    text-transform: capitalize;
+    font-weight: 600;
+}
+
+.status-badge.downloading {
+    background-color: rgba(0, 120, 215, 0.15);
+    border: 1px solid rgba(0, 120, 215, 0.3);
+}
+
+.status-badge.paused {
+    background-color: rgba(243, 156, 18, 0.15);
+    border: 1px solid rgba(243, 156, 18, 0.3);
+}
+
+.status-badge.completed {
+    background-color: rgba(46, 204, 113, 0.15);
+    border: 1px solid rgba(46, 204, 113, 0.3);
+}
+
+.status-badge.failed {
+    background-color: rgba(231, 76, 60, 0.15);
+    border: 1px solid rgba(231, 76, 60, 0.3);
+}
+
+.status-text {
+    margin-bottom: 5px;
 }
 
 .empty-list-message {
@@ -558,6 +599,7 @@ body {
     padding: 1.5rem;
 }
 
+/* Form styles */
 .form-group {
     margin-bottom: 1.25rem;
 }
@@ -565,18 +607,18 @@ body {
 .form-group label {
     display: block;
     margin-bottom: 0.5rem;
-    font-size: 0.95rem;
     font-weight: 500;
     color: var(--text-color);
+    font-size: 0.95rem;
 }
 
 .form-group input,
 .form-group select {
     width: 100%;
     padding: 0.75rem 1rem;
-    background-color: var(--bg-darker);
-    border: 1px solid var(--border-color);
     border-radius: 8px;
+    background-color: var(--bg-lighter);
+    border: 1px solid var(--border-color);
     color: var(--text-color);
     font-size: 0.95rem;
     transition: var(--hover-transition);
@@ -589,11 +631,46 @@ body {
     outline: none;
 }
 
+/* YouTube options styles */
+.youtube-options {
+    background-color: rgba(255, 0, 0, 0.1);
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid rgba(255, 0, 0, 0.2);
+}
+
+.youtube-options label i {
+    color: #ff0000;
+    margin-right: 0.5rem;
+}
+
+.radio-group {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 0.75rem;
+}
+
+.radio-option {
+    display: flex;
+    align-items: center;
+}
+
+.radio-option input[type="radio"] {
+    width: auto;
+    margin-right: 0.5rem;
+    cursor: pointer;
+}
+
+.radio-option label {
+    margin-bottom: 0;
+    cursor: pointer;
+}
+
 .form-actions {
     display: flex;
     justify-content: flex-end;
-    margin-top: 2rem;
     gap: 1rem;
+    margin-top: 1.5rem;
 }
 
 .btn-primary,
@@ -662,4 +739,363 @@ body {
     100% {
         box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
     }
+}
+
+/* Improve checkbox styling */
+input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    margin: 0;
+    vertical-align: middle;
+}
+
+.item-checkbox, .header-checkbox {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    padding: 0 5px;
+}
+
+/* Speed display improvements */
+.item-speed {
+    font-weight: 600;
+    color: var(--primary-light);
+}
+
+/* Time left styling */
+.item-time {
+    font-family: monospace;
+    font-size: 0.95rem;
+}
+
+/* Speed indicator colors */
+.speed-low {
+    color: var(--text-dim);
+}
+
+.speed-medium {
+    color: var(--warning-color);
+}
+
+.speed-high {
+    color: var(--success-color);
+    font-weight: bold;
+}
+
+/* Progress bar colors based on status */
+.progress-downloading {
+    background: linear-gradient(to right, var(--primary-color), var(--primary-light));
+    box-shadow: 0 0 5px rgba(99, 102, 241, 0.5);
+}
+
+.progress-paused {
+    background-color: var(--warning-color);
+}
+
+.progress-completed {
+    background-color: var(--success-color);
+}
+
+.progress-failed {
+    background-color: var(--error-color);
+}
+
+/* Notification styles */
+.notification-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.notification {
+    background-color: var(--bg-card);
+    border-radius: 8px;
+    padding: 12px 15px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 300px;
+    max-width: 400px;
+    animation: slideIn 0.3s ease;
+    border-left: 4px solid var(--primary-color);
+}
+
+.notification-success {
+    border-left-color: var(--success-color);
+}
+
+.notification-error {
+    border-left-color: var(--error-color);
+}
+
+.notification-warning {
+    border-left-color: var(--warning-color);
+}
+
+.notification-message {
+    flex: 1;
+    font-size: 0.95rem;
+    margin-right: 10px;
+}
+
+.notification-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0;
+    margin: 0;
+    height: 24px;
+    width: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: var(--hover-transition);
+}
+
+.notification-close:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--text-color);
+}
+
+.notification-hiding {
+    animation: slideOut 0.3s ease forwards;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+}
+
+/* Button active state */
+.button-active {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 2px var(--primary-glow);
+    background-color: var(--primary-glow);
+}
+
+/* Loading overlay styles */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+
+.loading-spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid rgba(255, 255, 255, 0.3);
+    border-top-color: var(--primary-color);
+    border-radius: 50%;
+    animation: spin 1s ease-in-out infinite;
+    margin-bottom: 20px;
+}
+
+.loading-text {
+    color: var(--text-color);
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Collapsible section styles */
+.collapsible-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background-color: var(--bg-lighter);
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 500;
+    margin-bottom: 0.75rem;
+    transition: var(--hover-transition);
+    color: var(--primary-light);
+}
+
+.collapsible-header:hover {
+    background-color: rgba(99, 102, 241, 0.1);
+}
+
+.collapsible-header i {
+    margin-right: 0.5rem;
+}
+
+.collapsible-header .toggle-icon {
+    margin-right: 0;
+    transition: transform 0.3s ease;
+}
+
+.collapsible-header.active .toggle-icon {
+    transform: rotate(180deg);
+}
+
+.collapsible-content {
+    padding: 0.5rem 1rem;
+    border-left: 2px solid var(--primary-light);
+    margin-left: 1rem;
+    margin-bottom: 1rem;
+}
+
+/* Checkbox group styles */
+.checkbox-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+    padding: 0.5rem;
+}
+
+.checkbox-option {
+    display: flex;
+    align-items: center;
+}
+
+.checkbox-option input[type="checkbox"] {
+    margin-right: 0.75rem;
+    cursor: pointer;
+}
+
+.checkbox-option label {
+    margin-bottom: 0;
+    cursor: pointer;
+    font-weight: normal;
+    font-size: 0.9rem;
+}
+
+.notifications-settings {
+    background-color: rgba(99, 102, 241, 0.1);
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+/* Context menu styles */
+.context-menu {
+    position: absolute;
+    z-index: 1000;
+    background-color: var(--bg-card);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-light);
+    padding: 0.5rem 0;
+    min-width: 180px;
+    animation: fadeIn 0.2s ease;
+}
+
+.context-menu-item {
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    transition: var(--hover-transition);
+}
+
+.context-menu-item:hover {
+    background-color: var(--bg-lighter);
+    color: var(--primary-light);
+}
+
+.context-menu-item i {
+    width: 24px;
+    margin-right: 0.75rem;
+    text-align: center;
+}
+
+.context-menu-separator {
+    height: 1px;
+    background-color: var(--border-color);
+    margin: 0.5rem 0;
+}
+
+/* Desktop notification badge */
+.notification-badge {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 12px 18px;
+    background-color: var(--bg-card);
+    border-radius: 50px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    display: flex;
+    align-items: center;
+    z-index: 1000;
+    border-left: 4px solid var(--primary-color);
+    animation: slideIn 0.3s ease;
+    cursor: pointer;
+    transition: var(--hover-transition);
+}
+
+.notification-badge:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.notification-badge i {
+    font-size: 1.25rem;
+    margin-right: 0.75rem;
+    color: var(--primary-light);
+}
+
+.notification-badge.success {
+    border-left-color: var(--success-color);
+}
+
+.notification-badge.success i {
+    color: var(--success-color);
+}
+
+.notification-badge.error {
+    border-left-color: var(--error-color);
+}
+
+.notification-badge.error i {
+    color: var(--error-color);
+}
+
+.notification-badge.warning {
+    border-left-color: var(--warning-color);
+}
+
+.notification-badge.warning i {
+    color: var(--warning-color);
 }

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from typing import List, Dict, Any, Optional
 
 from app.models.download import (
     CreateDownloadRequest,
@@ -7,6 +8,7 @@ from app.models.download import (
     DownloadsListResponse,
     DownloadStatus,
     FileCategory,
+    DownloadPriority,
 )
 from app.services.downloader import download_manager
 
@@ -17,7 +19,9 @@ router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 async def create_download(request: CreateDownloadRequest):
     """Add a new download"""
     download = await download_manager.add_download(request)
-    return {"download": download}
+    # Get a serializable version
+    download_dict = download_manager._prepare_download_for_api(download)
+    return {"download": download_dict}
 
 
 @router.get("", response_model=DownloadsListResponse)
@@ -62,10 +66,12 @@ async def list_downloads(category: FileCategory | None = None, status: str | Non
         # Handle multiple statuses
         all_downloads = []
         for status_value in statuses:
-            all_downloads.extend(download_manager.get_downloads(category, status_value))
+            # Get serializable downloads already prepared for API
+            downloads_for_status = download_manager.get_downloads(category, status_value)
+            all_downloads.extend(downloads_for_status)
 
         # Remove duplicates (in case a download matches multiple statuses)
-        unique_downloads = {download.id: download for download in all_downloads}
+        unique_downloads = {download['id']: download for download in all_downloads}
         downloads = list(unique_downloads.values())
     else:
         # Just filter by category
@@ -80,7 +86,9 @@ async def get_download(download_id: str):
     download = download_manager.get_download(download_id)
     if not download:
         raise HTTPException(status_code=404, detail="Download not found")
-    return {"download": download}
+    # Get a serializable version
+    download_dict = download_manager._prepare_download_for_api(download)
+    return {"download": download_dict}
 
 
 @router.post("/{download_id}/pause", response_model=DownloadItemResponse)
@@ -93,7 +101,9 @@ async def pause_download(download_id: str) -> dict:
             status_code=404, detail=f"Download {download_id} not found or not in downloading state"
         )
 
-    return {"download": download}
+    # Get a serializable version
+    download_dict = download_manager._prepare_download_for_api(download)
+    return {"download": download_dict}
 
 
 @router.post("/{download_id}/resume", response_model=DownloadItemResponse)
@@ -102,7 +112,10 @@ async def resume_download(download_id: str) -> dict:
     download = await download_manager.resume_download(download_id)
     if not download:
         raise HTTPException(status_code=404, detail="Download not found or not in paused state")
-    return {"download": download}
+    
+    # Get a serializable version
+    download_dict = download_manager._prepare_download_for_api(download)
+    return {"download": download_dict}
 
 
 @router.delete("/{download_id}")
@@ -138,7 +151,7 @@ async def resume_all_downloads():
     return {"resumed_count": count}
 
 
-@router.post("/{download_id}/open", response_model=dict)
+@router.post("/{download_id}/open")
 async def open_download(download_id: str) -> dict:
     """Open a downloaded file with the default system application"""
     download = download_manager.get_download(download_id)
@@ -155,3 +168,37 @@ async def open_download(download_id: str) -> dict:
         raise HTTPException(status_code=500, detail="Failed to open file")
 
     return {"success": True, "message": f"Opening file: {download.name}"}
+
+
+@router.post("/{download_id}/settings", response_model=DownloadItemResponse)
+async def update_download_settings(
+    download_id: str,
+    priority: Optional[DownloadPriority] = None,
+    max_speed: Optional[int] = None,
+    max_retries: Optional[int] = None,
+):
+    """Update the settings for a specific download"""
+    download = download_manager.get_download(download_id)
+    
+    if not download:
+        raise HTTPException(status_code=404, detail="Download not found")
+    
+    # Update settings if provided
+    if priority is not None:
+        download.priority = priority
+    
+    if max_speed is not None:
+        download.max_speed = max_speed
+    
+    if max_retries is not None:
+        download.max_retries = max_retries
+    
+    # Save changes
+    await download_manager.save_downloads()
+    
+    # Broadcast update to clients
+    await download_manager._broadcast_download_update(download_id)
+    
+    # Return updated download
+    download_dict = download_manager._prepare_download_for_api(download)
+    return {"download": download_dict}
