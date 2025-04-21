@@ -1,406 +1,227 @@
-# XcelerateDL Documentation
+# XcelerateDL
 
-## Overview
+A high-performance download manager with FastAPI backend and intuitive UI.
 
-XcelerateDL is a modern, high-performance download manager API built with FastAPI and Python. It provides a robust backend for managing downloads with features similar to Internet Download Manager (IDM). The application offers both a RESTful API for integration with other applications and a GUI interface for standalone usage.
+## Features
 
-## Core Features
+- **Fast Downloads**: Multi-threaded, asynchronous downloading
+- **YouTube Support**: Download videos or extract audio as MP3
+- **Flexible Control**: Pause, resume, or cancel downloads
+- **Real-time Updates**: Monitor progress via WebSockets 
+- **File Organization**: Auto-categorize downloads by type
+- **Queue Management**: Prioritize downloads with pause/resume all
+- **Persistent Storage**: Resume downloads after application restart
+- **Dual Interface**: Use the REST API or standalone GUI
 
-- **Fast Asynchronous Downloads**: Uses Python's asyncio and aiohttp for efficient concurrent downloads
-- **YouTube Integration**: Download YouTube videos or extract audio tracks as MP3 files
-- **File Categorization**: Automatic organization of downloaded files by type
-- **Download Control**: Pause, resume, or cancel individual downloads
-- **Queue Management**: Control download queues with pause-all and resume-all functionality
-- **Progress Tracking**: Monitor download progress, speed, and estimated time remaining
-- **Persistent Storage**: Downloads state is automatically saved and can be resumed after application restart
-- **WebSocket Updates**: Real-time download progress updates via WebSockets
-
-## Architecture
-
-XcelerateDL follows a modular architecture:
-
-1. **FastAPI Backend**: Handles HTTP requests and serves the API endpoints
-2. **Download Manager**: Core service responsible for managing downloads
-3. **WebSocket Manager**: Handles real-time communication with clients
-4. **Data Models**: Pydantic models for type validation and API documentation
-5. **Web UI**: HTML/CSS/JS frontend for user interaction
-
-### Key Components
-
-#### Download Manager
-
-The `DownloadManager` class in `app/services/downloader.py` is the heart of the application. It manages:
-- Download queue processing
-- File download operations
-- YouTube video/audio downloading
-- Download status tracking
-- Persistence of download states
-
-#### API Routes
-
-API endpoints in `app/api/downloads.py` expose the download functionality through a RESTful interface:
-- `/api/downloads`: Add and list downloads
-- `/api/downloads/{id}`: Get, pause, resume, or delete a specific download
-- `/api/downloads/pause-all`: Pause all active downloads
-- `/api/downloads/resume-all`: Resume all paused downloads
-
-#### Data Models
-
-The models in `app/models/download.py` define the data structures:
-- `DownloadItem`: Represents a download with all its metadata
-- `DownloadStatus`: Enum of possible download states (queued, downloading, paused, etc.)
-- `FileCategory`: Enum of file categories for organization
-- `YoutubeDownloadType`: Enum for YouTube download options (video or audio)
-
-## Installation
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.8 or higher
-- For YouTube download functionality:
-  - yt-dlp or youtube-dl
-  - ffmpeg (for audio extraction)
+- Python 3.8+
+- For YouTube downloads: ffmpeg
 
-### Step-by-Step Installation
+### Installation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/XcelerateDL.git
-   cd XcelerateDL
-   ```
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/XcelerateDL.git
+cd XcelerateDL
 
-2. Create and activate a virtual environment (optional but recommended):
-   ```bash
-   python -m venv venv
-   # On Windows
-   venv\Scripts\activate
-   # On macOS/Linux
-   source venv/bin/activate
-   ```
+# Create and activate virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Install dependencies
+pip install -r requirements.txt
 
-4. Run the application:
-   ```bash
-   # Start with GUI
-   python -m app.main --gui
-   
-   # Start API only
-   python -m app.main --api-only
-   
-   # Start with custom host/port
-   python -m app.main --api-only --host 127.0.0.1 --port 8080
-   ```
-
-## API Reference
-
-### Add a New Download
-
-```
-POST /api/downloads
+# Run the application
+python -m app.main  # Default mode
+python -m app.main --gui  # GUI mode
+python -m app.main --api-only --host 127.0.0.1 --port 8080  # API only with custom host/port
 ```
 
-Request body:
+## API Usage
+
+### Add a Download
+
+```bash
+curl -X POST http://localhost:8000/api/downloads \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/file.zip"}'
+```
+
+### YouTube Download
+
+```bash
+curl -X POST http://localhost:8000/api/downloads \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://youtube.com/watch?v=VIDEO_ID", "is_youtube": true, "youtube_type": "video"}'
+```
+
+### Manage Downloads
+
+```bash
+# List all downloads
+curl http://localhost:8000/api/downloads
+
+# Pause a download
+curl -X POST http://localhost:8000/api/downloads/{download_id}/pause
+
+# Resume a download
+curl -X POST http://localhost:8000/api/downloads/{download_id}/resume
+
+# Delete a download
+curl -X DELETE http://localhost:8000/api/downloads/{download_id}
+
+# Pause all downloads
+curl -X POST http://localhost:8000/api/downloads/pause-all
+
+# Resume all downloads
+curl -X POST http://localhost:8000/api/downloads/resume-all
+```
+
+## Comprehensive Documentation
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/downloads` | GET | List all downloads with optional filtering by category or status |
+| `/api/downloads` | POST | Add a new download |
+| `/api/downloads/{id}` | GET | Get details of a specific download |
+| `/api/downloads/{id}/pause` | POST | Pause a specific download |
+| `/api/downloads/{id}/resume` | POST | Resume a specific download |
+| `/api/downloads/{id}` | DELETE | Delete a download, with option to delete the file |
+| `/api/downloads/pause-all` | POST | Pause all active downloads |
+| `/api/downloads/resume-all` | POST | Resume all paused downloads |
+| `/api/downloads/{id}/open` | POST | Open downloaded file with system's default application |
+| `/api/downloads/{id}/settings` | POST | Update settings for a specific download |
+
+### Download Parameters
+
+When creating a download, you can specify these parameters:
+
 ```json
 {
   "url": "https://example.com/file.zip",
-  "filename": "myfile.zip",  // optional, detected from URL if not provided
-  "save_path": "/path/to/save",  // optional, defaults to downloads folder
-  "category": "compressed",  // optional, auto-detected if not provided
-  "is_youtube": false,  // optional, auto-detected if not provided
-  "youtube_type": "video"  // optional, used for YouTube downloads
+  "filename": "myfile.zip",  // Optional: Auto-detected if not provided
+  "save_path": "/path/to/save",  // Optional: Uses default downloads folder if not specified
+  "category": "compressed",  // Optional: Auto-detected based on file extension
+  "is_youtube": false,  // Optional: Auto-detected from URL
+  "youtube_type": "video",  // Optional: "video" or "audio"
+  "priority": 2,  // Optional: 1=low, 2=normal, 3=high
+  "max_speed": 1048576,  // Optional: Limit download speed in bytes/sec
+  "max_retries": 3  // Optional: Max retry attempts for failed downloads
 }
 ```
 
-Response:
-```json
-{
-  "download": {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "name": "myfile.zip",
-    "url": "https://example.com/file.zip",
-    "size": 1024000,
-    "size_downloaded": 0,
-    "status": "queued",
-    "speed": 0,
-    "time_left": null,
-    "date_added": "2023-04-01T12:00:00",
-    "save_path": "/path/to/save/myfile.zip",
-    "category": "compressed",
-    "is_youtube": false,
-    "youtube_type": null,
-    "progress": 0
-  }
-}
-```
+### Status Codes
 
-### List All Downloads
+| Status | Description |
+|--------|-------------|
+| `queued` | Download is waiting in queue |
+| `downloading` | Download is in progress |
+| `paused` | Download has been paused |
+| `completed` | Download has finished successfully |
+| `failed` | Download encountered an error |
 
-```
-GET /api/downloads
-```
+### File Categories
 
-Query parameters:
-- `category`: Filter by file category (optional)
-- `status`: Filter by download status (optional)
-
-Response:
-```json
-{
-  "downloads": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "name": "myfile.zip",
-      "url": "https://example.com/file.zip",
-      "size": 1024000,
-      "size_downloaded": 512000,
-      "status": "downloading",
-      "speed": 1048576,
-      "time_left": 30,
-      "date_added": "2023-04-01T12:00:00",
-      "save_path": "/path/to/save/myfile.zip",
-      "category": "compressed",
-      "is_youtube": false,
-      "youtube_type": null,
-      "progress": 50
-    }
-  ],
-  "total": 1
-}
-```
-
-### Get Download Details
-
-```
-GET /api/downloads/{download_id}
-```
-
-Response: Same as add download response
-
-### Pause a Download
-
-```
-POST /api/downloads/{download_id}/pause
-```
-
-Response: Download item with updated status
-
-### Resume a Download
-
-```
-POST /api/downloads/{download_id}/resume
-```
-
-Response: Download item with updated status
-
-### Delete a Download
-
-```
-DELETE /api/downloads/{download_id}?delete_file=false
-```
-
-Query parameters:
-- `delete_file`: Whether to delete the downloaded file (default: false)
-
-Response:
-```json
-{
-  "success": true
-}
-```
-
-### Pause All Downloads
-
-```
-POST /api/downloads/pause-all
-```
-
-Response:
-```json
-{
-  "paused_count": 3
-}
-```
-
-### Resume All Downloads
-
-```
-POST /api/downloads/resume-all
-```
-
-Response:
-```json
-{
-  "resumed_count": 3
-}
-```
-
-### Open a Downloaded File
-
-```
-POST /api/downloads/{download_id}/open
-```
-
-Response:
-```json
-{
-  "success": true,
-  "message": "Opening file: myfile.zip"
-}
-```
-
-## WebSocket API
-
-XcelerateDL provides real-time updates through WebSockets at:
-
-```
-ws://localhost:8000/ws
-```
-
-The WebSocket sends JSON messages with download updates:
-
-```json
-{
-  "type": "update",
-  "download": {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "name": "myfile.zip",
-    "status": "downloading",
-    "progress": 50,
-    "speed": 1048576,
-    "time_left": 30
-    // ... other download properties
-  }
-}
-```
-
-## YouTube Download Features
-
-XcelerateDL uses yt-dlp (or youtube-dl as fallback) to download content from YouTube. 
-
-### Supported Features
-
-- Video downloads in highest quality
-- Audio extraction (MP3 format)
-- Progress tracking
-- Pause/resume functionality
-
-### Example YouTube Download Request
-
-```json
-{
-  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "is_youtube": true,
-  "youtube_type": "audio"
-}
-```
-
-## File Categories
-
-XcelerateDL automatically categorizes downloads based on file extensions:
-
-- `compressed`: .zip, .rar, .7z, .tar, .gz
-- `programs`: .exe, .msi, .deb, .rpm, .pkg
-- `videos`: .mp4, .avi, .mkv, .mov, .wmv
-- `music`: .mp3, .wav, .ogg, .flac, .m4a
-- `pictures`: .jpg, .jpeg, .png, .gif, .bmp, .webp
-- `documents`: .pdf, .doc, .docx, .txt, .xls, .xlsx, .ppt, .pptx
-- `youtube`: Special category for YouTube downloads
-- `other`: Any other file type
-
-## Download Status Lifecycle
-
-Downloads in XcelerateDL follow this lifecycle:
-
-1. `queued`: Initial state after adding a download
-2. `downloading`: Download is in progress
-3. `paused`: Download has been manually paused
-4. `completed`: Download has finished successfully
-5. `failed`: Download encountered an error and could not complete
+| Category | Description |
+|----------|-------------|
+| `compressed` | ZIP, RAR, 7Z, etc. |
+| `programs` | EXE, MSI, DEB, etc. |
+| `videos` | MP4, MKV, AVI, etc. |
+| `music` | MP3, FLAC, WAV, etc. |
+| `pictures` | JPG, PNG, GIF, etc. |
+| `documents` | PDF, DOCX, XLSX, etc. |
+| `youtube` | YouTube videos or extracted audio |
+| `other` | Files not matching other categories |
 
 ## Configuration
 
-XcelerateDL has these configurable settings:
+Configure default settings in the app:
 
-- Default download directory (default: `./downloads`)
-- Storage file location (default: `./downloads/download_data.json`)
-- Autosave interval (default: 30 seconds)
+- Download folder location
+- Maximum concurrent downloads
+- Default download priorities
+- Speed limits
 
-## Advanced Features
+## Architecture
 
-### Partial Download Recovery
+- **FastAPI Backend**: Handles HTTP requests and WebSocket connections
+- **Download Manager**: Core service that manages the download queue and operations
+- **WebSocket Manager**: Provides real-time updates to connected clients
+- **Data Models**: Pydantic models for type validation
+- **GUI**: Built with Eel for a seamless desktop experience
 
-XcelerateDL automatically detects partially downloaded files and resumes them from where they left off. This works by:
+### Core Components
 
-1. Comparing the downloaded file size with the expected total size
-2. Sending a Range HTTP header to resume from the correct position
-3. Updating progress tracking based on already downloaded content
+#### Download Manager
 
-### Download Speed and Time Left Calculation
+The heart of XcelerateDL is the `DownloadManager` class which:
+- Processes the download queue based on priority
+- Manages file download operations using async I/O
+- Handles YouTube video/audio downloading through yt-dlp
+- Tracks download status, speed, and progress
+- Persists download states between application sessions
 
-The application tracks download speed and estimates remaining time by:
-- Monitoring download progress over time
-- Calculating a rolling average of download speed
-- Estimating time left based on current speed and remaining bytes
+#### WebSocket Manager
 
-### Error Handling
+The WebSocket manager enables real-time updates by:
+- Managing client connections
+- Broadcasting download status changes
+- Providing progress updates during downloads
+- Enabling responsive UI without polling
 
-XcelerateDL handles various download errors:
-- Network errors: Temporary failures are retried
-- Permanent errors: Downloads are marked as failed
-- Server errors: Appropriate HTTP status codes are handled
+#### FastAPI Routes
 
-## Best Practices
+The API routes provide RESTful access to all download functionality:
+- CRUD operations for downloads
+- Batch operations (pause-all, resume-all)
+- File operations (open downloaded files)
+- Filtering and searching downloads
 
-1. **Recommended Folder Structure**:
-   - Keep downloads organized in category subdirectories
-   - Use a separate location for temporary/in-progress downloads
+## Development
 
-2. **Performance Optimization**:
-   - Limit concurrent downloads to avoid network saturation
-   - For YouTube downloads, audio-only is faster than video downloads
+### Project Structure
 
-3. **Error Recovery**:
-   - For failed downloads, try resuming before restarting from scratch
-   - Check your internet connection before initiating large downloads
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Downloads fail to start**:
-   - Check internet connectivity
-   - Verify the URL is accessible from your network
-   - Ensure you have write permissions to the download directory
-
-2. **YouTube downloads fail**:
-   - Make sure yt-dlp or youtube-dl is properly installed
-   - For audio extraction, verify ffmpeg is installed
-
-3. **Application crashes**:
-   - Check logs for error messages
-   - Ensure all dependencies are correctly installed
-
-### Debugging
-
-Enable detailed logging by setting the environment variable:
 ```
-DEBUG=1
+XcelerateDL/
+├── app/
+│   ├── api/           # API endpoints
+│   ├── models/        # Data models
+│   ├── services/      # Business logic
+│   ├── static/        # CSS, JS, images
+│   ├── templates/     # HTML templates
+│   ├── gui.py         # Desktop GUI
+│   └── main.py        # Application entry point
+├── downloads/         # Default download location
+├── docs/              # Documentation
+├── requirements.txt   # Python dependencies
+└── README.md          # This file
 ```
-
-## Contributing
-
-Contributions to XcelerateDL are welcome! Here's how you can contribute:
-
-1. **Report bugs** by opening an issue
-2. **Request features** through the issue tracker
-3. **Submit pull requests** for bug fixes or features
-
-Please follow the existing code style and add tests for new features.
 
 ## License
 
-XcelerateDL is released under the MIT License. 
+MIT License
+
+Copyright (c) 2023 XcelerateDL
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE. 

@@ -1,14 +1,15 @@
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Dict, Any, Optional
 
 from app.models.download import (
     CreateDownloadRequest,
     DownloadItemResponse,
+    DownloadPriority,
     DownloadResponse,
     DownloadsListResponse,
     DownloadStatus,
     FileCategory,
-    DownloadPriority,
 )
 from app.services.downloader import download_manager
 
