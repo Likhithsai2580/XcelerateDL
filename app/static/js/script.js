@@ -55,11 +55,17 @@ window.addEventListener('load', function() {
             // Set up advanced settings collapsible sections
             setupCollapsibleSections();
             
+            // Set up scheduling functionality
+            setupSchedulingOptions();
+            
             // Load notification settings
             loadNotificationSettings();
             
             // Setup context menu
             setupContextMenu();
+            
+            // Attach all event handlers
+            attachEventHandlers();
             
             // Initialize notification permission
             initializeNotifications();
@@ -129,6 +135,442 @@ function setupCollapsibleSections() {
     });
 }
 
+// Setup scheduling functionality
+function setupSchedulingOptions() {
+    // Handle "Schedule for later" checkbox in the new download form
+    const enableScheduleCheckbox = document.getElementById('enable-schedule');
+    const scheduleOptions = document.querySelector('.schedule-options');
+    
+    if (enableScheduleCheckbox && scheduleOptions) {
+        enableScheduleCheckbox.addEventListener('change', function() {
+            scheduleOptions.style.display = this.checked ? 'block' : 'none';
+            
+            // Set default datetime to current time + 1 hour if checked
+            if (this.checked) {
+                const dateInput = document.getElementById('schedule-datetime');
+                if (dateInput) {
+                    const now = new Date();
+                    now.setHours(now.getHours() + 1);
+                    
+                    // Format date in yyyy-MM-ddThh:mm format
+                    const year = now.getFullYear();
+                    const month = String(now.getMonth() + 1).padStart(2, '0');
+                    const day = String(now.getDate()).padStart(2, '0');
+                    const hours = String(now.getHours()).padStart(2, '0');
+                    const minutes = String(now.getMinutes()).padStart(2, '0');
+                    
+                    dateInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
+                }
+                
+                // Scroll schedule options into view with a slight delay to ensure display has updated
+                setTimeout(() => {
+                    scheduleOptions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }, 100);
+            }
+        });
+    }
+    
+    // Handle recurrence option changes in new download form
+    const recurrenceSelect = document.getElementById('schedule-recurrence');
+    const daysOfWeekDiv = document.querySelector('.days-of-week');
+    const dayOfMonthDiv = document.querySelector('.day-of-month');
+    
+    if (recurrenceSelect) {
+        recurrenceSelect.addEventListener('change', function() {
+            // Only show days of week selection for weekly recurrence
+            if (daysOfWeekDiv) {
+                daysOfWeekDiv.style.display = this.value === 'weekly' ? 'block' : 'none';
+            }
+            
+            // Only show day of month selection for monthly recurrence
+            if (dayOfMonthDiv) {
+                dayOfMonthDiv.style.display = this.value === 'monthly' ? 'block' : 'none';
+            }
+        });
+    }
+    
+    // Handle recurrence option changes in schedule modal
+    const modalRecurrenceSelect = document.getElementById('schedule-modal-recurrence');
+    const modalDaysOfWeekDiv = document.getElementById('modal-days-of-week');
+    const modalDayOfMonthDiv = document.getElementById('modal-day-of-month');
+    
+    if (modalRecurrenceSelect) {
+        modalRecurrenceSelect.addEventListener('change', function() {
+            // Only show days of week selection for weekly recurrence
+            if (modalDaysOfWeekDiv) {
+                modalDaysOfWeekDiv.style.display = this.value === 'weekly' ? 'block' : 'none';
+            }
+            
+            // Only show day of month selection for monthly recurrence
+            if (modalDayOfMonthDiv) {
+                modalDayOfMonthDiv.style.display = this.value === 'monthly' ? 'block' : 'none';
+            }
+        });
+    }
+    
+    // Setup schedule download form submission
+    const scheduleForm = document.getElementById('schedule-download-form');
+    if (scheduleForm) {
+        scheduleForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const downloadId = document.getElementById('schedule-download-id').value;
+            const scheduledTimeInput = document.getElementById('schedule-modal-datetime').value;
+            const recurrence = document.getElementById('schedule-modal-recurrence').value;
+            const bandwidthAllocation = parseInt(document.getElementById('schedule-modal-bandwidth').value);
+            const retryOnFailure = document.getElementById('schedule-modal-retry').checked;
+            const maxRetries = parseInt(document.getElementById('schedule-modal-max-retries').value);
+            const retryDelay = parseInt(document.getElementById('schedule-modal-retry-delay').value);
+            const notifyOnStart = document.getElementById('schedule-modal-notify').checked;
+            const priorityBoost = document.getElementById('schedule-modal-priority-boost').checked;
+            
+            // Convert local datetime to ISO format for API
+            let scheduledTime = null;
+            if (scheduledTimeInput) {
+                try {
+                    // Create date object from input and convert to ISO string with timezone info
+                    const dateObj = new Date(scheduledTimeInput);
+                    if (!isNaN(dateObj.getTime())) {
+                        // The toISOString() method converts to UTC time automatically
+                        scheduledTime = dateObj.toISOString();
+                        
+                        // Enhanced timezone debugging
+                        console.log('=== SCHEDULE MODAL TIMEZONE DEBUGGING ===');
+                        console.log(`Original input: ${scheduledTimeInput}`);
+                        console.log(`Local date object: ${dateObj.toString()}`);
+                        console.log(`Converted to UTC ISO: ${scheduledTime}`);
+                        console.log(`Local timezone offset: ${dateObj.getTimezoneOffset()} minutes`);
+                        console.log(`Browser timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+                        console.log('======================================');
+                    } else {
+                        showNotification('Invalid date format. Please check the date and time.', 'error');
+                        return;
+                    }
+                } catch (err) {
+                    console.error('Date parsing error:', err);
+                    showNotification('Invalid date format. Please check the date and time.', 'error');
+                    return;
+                }
+            } else {
+                showNotification('Please select a date and time.', 'error');
+                return;
+            }
+            
+            // Get selected days of week for weekly recurrence
+            let daysOfWeek = null;
+            if (recurrence === 'weekly') {
+                daysOfWeek = [];
+                document.querySelectorAll('#modal-days-of-week input[name="days_of_week"]:checked').forEach(checkbox => {
+                    daysOfWeek.push(parseInt(checkbox.value));
+                });
+                
+                // Validate at least one day is selected
+                if (daysOfWeek.length === 0) {
+                    showNotification('Please select at least one day of the week.', 'error');
+                    return;
+                }
+            }
+            
+            // Get day of month for monthly recurrence
+            let dayOfMonth = null;
+            if (recurrence === 'monthly') {
+                dayOfMonth = parseInt(document.getElementById('modal-day-of-month-input').value || '1');
+                
+                // Validate day of month
+                if (isNaN(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
+                    showNotification('Please enter a valid day of the month (1-31).', 'error');
+                    return;
+                }
+            }
+            
+            // Create schedule data
+            const scheduleData = {
+                scheduled_time: scheduledTime,
+                bandwidth_allocation: bandwidthAllocation,
+                retry_on_failure: retryOnFailure,
+                max_schedule_retries: maxRetries,
+                retry_delay_minutes: retryDelay,
+                notify_on_start: notifyOnStart,
+                priority_boost: priorityBoost
+            };
+            
+            // Add recurrence data if selected
+            if (recurrence) {
+                scheduleData.recurrence = recurrence;
+                if (recurrence === 'weekly' && daysOfWeek) {
+                    scheduleData.days_of_week = daysOfWeek;
+                } else if (recurrence === 'monthly' && dayOfMonth) {
+                    scheduleData.day_of_month = dayOfMonth;
+                }
+            }
+            
+            // Call API to schedule the download
+            try {
+                showLoadingOverlay(); // Show loading while API call is in progress
+                const result = await eel.schedule_download(downloadId, scheduleData)();
+                hideLoadingOverlay();
+                
+                if (result.error) {
+                    showNotification(`Error: ${result.error}`, 'error');
+                } else {
+                    // Update the download in the UI
+                    downloads[downloadId] = result;
+                    renderDownloads();
+                    showNotification('Download scheduled successfully!', 'success');
+                    closeModal('schedule-download-modal');
+                }
+            } catch (error) {
+                hideLoadingOverlay();
+                console.error('Error scheduling download:', error);
+                showNotification('Failed to schedule download. Please try again.', 'error');
+            }
+        });
+    }
+    
+    // Update the new download form to handle scheduling
+    const newDownloadForm = document.getElementById('new-download-form');
+    if (newDownloadForm) {
+        const originalSubmitHandler = newDownloadForm.onsubmit;
+        newDownloadForm.onsubmit = async function(e) {
+            e.preventDefault();
+            
+            // Get form data
+            const formData = new FormData(newDownloadForm);
+            const downloadData = {
+                url: formData.get('url'),
+                filename: formData.get('filename') || null,
+                save_path: formData.get('save_path') || null,
+                category: formData.get('category') || null,
+                is_youtube: false,
+                priority: parseInt(formData.get('priority') || '2'),
+                max_speed: parseInt(formData.get('max_speed') || '0'),
+                max_retries: parseInt(formData.get('max_retries') || '3')
+            };
+            
+            // Handle YouTube options
+            if (detectYouTubeUrl(downloadData.url)) {
+                downloadData.is_youtube = true;
+                downloadData.youtube_type = formData.get('youtube_type') || 'video';
+            }
+            
+            // Handle scheduling if enabled
+            if (formData.get('enable_schedule')) {
+                const scheduledTimeInput = formData.get('scheduled_time');
+                if (scheduledTimeInput) {
+                    try {
+                        // Create date object from input and convert to ISO string with timezone info
+                        const dateObj = new Date(scheduledTimeInput);
+                        if (!isNaN(dateObj.getTime())) {
+                            downloadData.schedule = {
+                                scheduled_time: dateObj.toISOString(), // Ensures UTC timezone
+                                bandwidth_allocation: parseInt(formData.get('bandwidth_allocation') || '100')
+                            };
+                            
+                            // Enhanced timezone debugging
+                            console.log('=== NEW DOWNLOAD TIMEZONE DEBUGGING ===');
+                            console.log(`Original input: ${scheduledTimeInput}`);
+                            console.log(`Local date object: ${dateObj.toString()}`);
+                            console.log(`Converted to UTC ISO: ${downloadData.schedule.scheduled_time}`);
+                            console.log(`Local timezone offset: ${dateObj.getTimezoneOffset()} minutes`);
+                            console.log(`Browser timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+                            console.log('======================================');
+                            
+                            const recurrence = formData.get('recurrence');
+                            if (recurrence) {
+                                downloadData.schedule.recurrence = recurrence;
+                                
+                                // Get days of week for weekly recurrence
+                                if (recurrence === 'weekly') {
+                                    const daysOfWeek = [];
+                                    document.querySelectorAll('.days-checkboxes input[name="days_of_week"]:checked').forEach(checkbox => {
+                                        daysOfWeek.push(parseInt(checkbox.value));
+                                    });
+                                    
+                                    if (daysOfWeek.length === 0) {
+                                        showNotification('Please select at least one day of the week.', 'error');
+                                        return;
+                                    }
+                                    
+                                    downloadData.schedule.days_of_week = daysOfWeek;
+                                }
+                                
+                                // Get day of month for monthly recurrence
+                                if (recurrence === 'monthly') {
+                                    const dayOfMonth = parseInt(document.getElementById('day-of-month-input').value || '1');
+                                    
+                                    if (isNaN(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
+                                        showNotification('Please enter a valid day of the month (1-31).', 'error');
+                                        return;
+                                    }
+                                    
+                                    downloadData.schedule.day_of_month = dayOfMonth;
+                                }
+                            }
+                        } else {
+                            showNotification('Invalid date format. Please check the date and time.', 'error');
+                            return;
+                        }
+                    } catch (err) {
+                        console.error('Date parsing error:', err);
+                        showNotification('Invalid date format. Please check the date and time.', 'error');
+                        return;
+                    }
+                } else {
+                    showNotification('Please select a date and time for scheduling.', 'warning');
+                    return;
+                }
+            }
+            
+            // Add the download
+            try {
+                const result = await eel.add_download(downloadData)();
+                if (result.error) {
+                    showNotification(`Error: ${result.error}`, 'error');
+                } else {
+                    // Add the new download to our list
+                    downloads[result.id] = result;
+                    renderDownloads();
+                    showNotification('Download added successfully!', 'success');
+                    closeModal('new-download-modal');
+                    newDownloadForm.reset();
+                }
+            } catch (error) {
+                console.error('Error adding download:', error);
+                showNotification('Failed to add download.', 'error');
+            }
+        };
+    }
+}
+
+// Open schedule download modal for a specific download
+function openScheduleModal(downloadId) {
+    const download = downloads[downloadId];
+    if (!download) return;
+    
+    // Set download ID and name
+    document.getElementById('schedule-download-id').value = downloadId;
+    document.getElementById('schedule-download-name').value = download.filename;
+    
+    // Set default date time (current time + 1 hour)
+    const defaultDate = new Date();
+    defaultDate.setHours(defaultDate.getHours() + 1);
+    
+    // Format date in yyyy-MM-ddThh:mm format
+    const year = defaultDate.getFullYear();
+    const month = String(defaultDate.getMonth() + 1).padStart(2, '0');
+    const day = String(defaultDate.getDate()).padStart(2, '0');
+    const hours = String(defaultDate.getHours()).padStart(2, '0');
+    const minutes = String(defaultDate.getMinutes()).padStart(2, '0');
+    
+    document.getElementById('schedule-modal-datetime').value = `${year}-${month}-${day}T${hours}:${minutes}`;
+    
+    // Reset form selections
+    document.getElementById('schedule-modal-recurrence').value = '';
+    document.getElementById('modal-days-of-week').style.display = 'none';
+    
+    // Hide day of month for monthly recurrence initially
+    const dayOfMonthDiv = document.getElementById('modal-day-of-month');
+    if (dayOfMonthDiv) {
+        dayOfMonthDiv.style.display = 'none';
+    }
+    
+    // Set default values for new options
+    document.getElementById('schedule-modal-bandwidth').value = '100';
+    document.getElementById('schedule-modal-retry').checked = true;
+    document.getElementById('schedule-modal-max-retries').value = '3';
+    document.getElementById('schedule-modal-retry-delay').value = '10';
+    document.getElementById('schedule-modal-notify').checked = true;
+    document.getElementById('schedule-modal-priority-boost').checked = false;
+    
+    // Set default day of month to current day
+    document.getElementById('modal-day-of-month-input').value = String(defaultDate.getDate());
+    
+    // Uncheck all days
+    document.querySelectorAll('#modal-days-of-week input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = false;
+    });
+    
+    // If the download already has schedule settings, populate the form with them
+    if (download.schedule) {
+        try {
+            // Set scheduled time if available
+            if (download.schedule.scheduled_time) {
+                const scheduledDate = new Date(download.schedule.scheduled_time);
+                const scheduledYear = scheduledDate.getFullYear();
+                const scheduledMonth = String(scheduledDate.getMonth() + 1).padStart(2, '0');
+                const scheduledDay = String(scheduledDate.getDate()).padStart(2, '0');
+                const scheduledHours = String(scheduledDate.getHours()).padStart(2, '0');
+                const scheduledMinutes = String(scheduledDate.getMinutes()).padStart(2, '0');
+                document.getElementById('schedule-modal-datetime').value = 
+                    `${scheduledYear}-${scheduledMonth}-${scheduledDay}T${scheduledHours}:${scheduledMinutes}`;
+            }
+            
+            // Set recurrence
+            if (download.schedule.recurrence) {
+                document.getElementById('schedule-modal-recurrence').value = download.schedule.recurrence;
+                
+                // Show days of week selector if weekly recurrence
+                if (download.schedule.recurrence === 'weekly' && download.schedule.days_of_week) {
+                    document.getElementById('modal-days-of-week').style.display = 'block';
+                    
+                    // Check the appropriate days
+                    download.schedule.days_of_week.forEach(day => {
+                        const checkbox = document.getElementById(`modal-day-${day}`);
+                        if (checkbox) checkbox.checked = true;
+                    });
+                }
+                
+                // Show day of month selector if monthly recurrence
+                if (download.schedule.recurrence === 'monthly') {
+                    if (dayOfMonthDiv) {
+                        dayOfMonthDiv.style.display = 'block';
+                    }
+                    
+                    // Set day of month
+                    if (download.schedule.day_of_month) {
+                        document.getElementById('modal-day-of-month-input').value = download.schedule.day_of_month;
+                    }
+                }
+            }
+            
+            // Set bandwidth allocation
+            if (download.schedule.bandwidth_allocation) {
+                document.getElementById('schedule-modal-bandwidth').value = download.schedule.bandwidth_allocation;
+            }
+            
+            // Set retry settings
+            if (download.schedule.retry_on_failure !== undefined) {
+                document.getElementById('schedule-modal-retry').checked = download.schedule.retry_on_failure;
+            }
+            
+            if (download.schedule.max_schedule_retries) {
+                document.getElementById('schedule-modal-max-retries').value = download.schedule.max_schedule_retries;
+            }
+            
+            if (download.schedule.retry_delay_minutes) {
+                document.getElementById('schedule-modal-retry-delay').value = download.schedule.retry_delay_minutes;
+            }
+            
+            // Set notification settings
+            if (download.schedule.notify_on_start !== undefined) {
+                document.getElementById('schedule-modal-notify').checked = download.schedule.notify_on_start;
+            }
+            
+            // Set priority boost
+            if (download.schedule.priority_boost !== undefined) {
+                document.getElementById('schedule-modal-priority-boost').checked = download.schedule.priority_boost;
+            }
+            
+        } catch (error) {
+            console.error('Error populating schedule form:', error);
+            // Continue with default values if error
+        }
+    }
+    
+    // Open the modal
+    openModal('schedule-download-modal');
+}
+
 // Setup context menu for downloads
 function setupContextMenu() {
     // Add right-click event listener to download items
@@ -190,6 +632,9 @@ function createDownloadContextMenu(downloadId, x, y) {
         menuContent += `
             <div class="context-menu-item" data-action="resume" data-id="${downloadId}">
                 <i class="fa-solid fa-play"></i> Resume
+            </div>
+            <div class="context-menu-item" data-action="schedule" data-id="${downloadId}">
+                <i class="fa-solid fa-calendar"></i> Schedule
             </div>
         `;
     }
@@ -254,32 +699,90 @@ async function handleContextMenuAction(e) {
         case 'settings':
             openDownloadSettings(downloadId);
             break;
+            
+        case 'schedule':
+            openScheduleModal(downloadId);
+            break;
+            
         case 'pause':
-            await eel.pause_download(downloadId)();
-            await updateDownloads(true);
+            try {
+                const result = await eel.pause_download(downloadId)();
+                if (result.error) {
+                    showNotification(`Error: ${result.error}`, 'error');
+                } else {
+                    downloads[downloadId] = result;
+                    renderDownloads();
+                    showNotification('Download paused.', 'info');
+                }
+            } catch (error) {
+                console.error('Error pausing download:', error);
+                showNotification('Failed to pause download.', 'error');
+            }
             break;
+            
         case 'resume':
-            await eel.resume_download(downloadId)();
-            await updateDownloads(true);
+            try {
+                const result = await eel.resume_download(downloadId)();
+                if (result.error) {
+                    showNotification(`Error: ${result.error}`, 'error');
+                } else {
+                    downloads[downloadId] = result;
+                    renderDownloads();
+                    showNotification('Download resumed.', 'info');
+                }
+            } catch (error) {
+                console.error('Error resuming download:', error);
+                showNotification('Failed to resume download.', 'error');
+            }
             break;
+            
         case 'open':
             try {
-                await eel.open_download(downloadId)();
+                const result = await eel.open_download(downloadId)();
+                if (!result.success) {
+                    showNotification(`Error: ${result.error || 'Failed to open file'}`, 'error');
+                }
             } catch (error) {
                 console.error('Error opening file:', error);
-                showNotification('Failed to open file', 'error');
+                showNotification('Failed to open file.', 'error');
             }
             break;
+            
         case 'delete':
+            // Confirm deletion
             if (confirm('Are you sure you want to delete this download?')) {
-                await eel.delete_download(downloadId, false)();
-                await updateDownloads(true);
+                try {
+                    const success = await eel.delete_download(downloadId, false)();
+                    if (success) {
+                        delete downloads[downloadId];
+                        renderDownloads();
+                        showNotification('Download deleted successfully.', 'success');
+                    } else {
+                        showNotification('Failed to delete download.', 'error');
+                    }
+                } catch (error) {
+                    console.error('Error deleting download:', error);
+                    showNotification('Failed to delete download.', 'error');
+                }
             }
             break;
+            
         case 'delete-file':
-            if (confirm('Are you sure you want to delete this download and its file?')) {
-                await eel.delete_download(downloadId, true)();
-                await updateDownloads(true);
+            // Confirm deletion with file
+            if (confirm('Are you sure you want to delete this download AND the associated file?')) {
+                try {
+                    const success = await eel.delete_download(downloadId, true)();
+                    if (success) {
+                        delete downloads[downloadId];
+                        renderDownloads();
+                        showNotification('Download and file deleted successfully.', 'success');
+                    } else {
+                        showNotification('Failed to delete download and file.', 'error');
+                    }
+                } catch (error) {
+                    console.error('Error deleting download and file:', error);
+                    showNotification('Failed to delete download and file.', 'error');
+                }
             }
             break;
     }
@@ -460,74 +963,106 @@ function setupSettingsButton() {
     }
 }
 
+// Setup toolbar action buttons
+function setupToolbarButtons() {
+    // Get all toolbar buttons with data-action attribute
+    const actionButtons = document.querySelectorAll('.toolbar-button[data-action]');
+    
+    // Add event listeners to each button
+    actionButtons.forEach(button => {
+        const action = button.dataset.action;
+        
+        // Remove any existing listeners to prevent duplicates
+        button.removeEventListener('click', handleToolbarAction);
+        
+        // Add the event listener
+        button.addEventListener('click', handleToolbarAction);
+    });
+}
+
+// Handle toolbar button clicks
+async function handleToolbarAction(e) {
+    const action = this.dataset.action;
+    
+    // Skip if button is disabled
+    if (this.disabled || this.classList.contains('disabled')) {
+        console.log(`Button ${action} is disabled`);
+        return;
+    }
+    
+    console.log(`Toolbar action: ${action}`);
+    
+    // Process different actions
+    switch (action) {
+        case 'resume':
+            await resumeSelectedDownloads();
+            break;
+            
+        case 'pause':
+            await pauseSelectedDownloads();
+            break;
+            
+        case 'delete':
+            await deleteSelectedDownloads();
+            break;
+            
+        case 'stop-all':
+            await pauseAll();
+            break;
+            
+        case 'start-queue':
+            // TODO: Implement start queue functionality
+            showNotification('Starting download queue', 'info');
+            break;
+            
+        case 'stop-queue':
+            // TODO: Implement stop queue functionality
+            showNotification('Stopping download queue', 'info');
+            break;
+            
+        default:
+            console.log(`Unhandled action: ${action}`);
+    }
+    
+    // Refresh the downloads list after action
+    await updateDownloads(true);
+}
+
 // Updated version of attachEventHandlers to include the settings button
 function attachEventHandlers() {
-    // Set up toolbar action buttons
-    document.querySelectorAll('.toolbar-button[data-action]').forEach(button => {
-        // Remove existing event listener first to prevent duplicates
-        button.replaceWith(button.cloneNode(true));
-        
-        // Get the new element after cloning
-        const newButton = document.querySelector(`.toolbar-button[data-action="${button.dataset.action}"]`);
-        if (!newButton) return;
-        
-        // Add new event listener
-        newButton.addEventListener('click', async (e) => {
-            const action = e.currentTarget.dataset.action;
-            
-            try {
-                switch (action) {
-                    case 'resume':
-                        await resumeSelectedDownloads();
-                        break;
-                    case 'pause':
-                        await pauseSelectedDownloads();
-                        break;
-                    case 'delete':
-                        await deleteSelectedDownloads();
-                        break;
-                    case 'start-queue':
-                        await resumeAll();
-                        break;
-                    case 'stop-queue':
-                    case 'stop-all':
-                        await pauseAll();
-                        break;
-                    case 'settings':
-                        if (selectedDownloads.size === 1) {
-                            // Open settings for the selected download
-                            const downloadId = [...selectedDownloads][0];
-                            openDownloadSettings(downloadId);
-                        } else if (selectedDownloads.size > 1) {
-                            showNotification('Please select only one download to edit settings', 'warning');
-                        } else {
-                            showNotification('Please select a download to edit settings', 'warning');
-                        }
-                        break;
-                }
-                await updateDownloads(true);
-            } catch (error) {
-                console.error('Error performing action:', error);
-                showNotification('Failed to perform action. Please try again.', 'error');
-            }
-        });
-    });
-    
     // Set up modal buttons
     document.querySelector('.new-download-btn')?.addEventListener('click', () => openModal('new-download-modal'));
     document.querySelector('.start-downloading-btn')?.addEventListener('click', () => openModal('new-download-modal'));
-    document.querySelectorAll('.close-modal').forEach(button => {
-        button.addEventListener('click', () => {
-            const modal = button.closest('.modal');
-            if (modal) closeModal(modal.id);
-        });
-    });
     
     // Set up select-all checkbox
     const selectAllCheckbox = document.getElementById('select-all');
     if (selectAllCheckbox) {
         selectAllCheckbox.addEventListener('change', handleSelectAll);
     }
+
+    // Get all close modal buttons
+    document.querySelectorAll('.close-modal').forEach(button => {
+        button.addEventListener('click', function() {
+            // Find the closest modal parent and get its ID
+            const modal = this.closest('.modal');
+            if (modal) {
+                closeModal(modal.id);
+            }
+        });
+    });
+
+    // Close modals when clicking outside the modal content
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('click', function(e) {
+            // Only close if clicking directly on the modal background, not on the content
+            if (e.target === this) {
+                closeModal(this.id);
+            }
+        });
+    });
+    
+    // Set up toolbar buttons
+    setupToolbarButtons();
 }
 
 // Show loading overlay
@@ -781,7 +1316,7 @@ function handleSelectAll(e) {
         
         if (isChecked) {
             selectedDownloads.add(downloadId);
-    } else {
+        } else {
             selectedDownloads.delete(downloadId);
         }
     });
@@ -860,7 +1395,7 @@ function renderDownloads() {
     }
 
     // Enable the select-all checkbox when we have downloads
-const selectAllCheckbox = document.getElementById('select-all');
+    const selectAllCheckbox = document.getElementById('select-all');
     if (selectAllCheckbox) {
         selectAllCheckbox.disabled = false;
     }
@@ -881,6 +1416,45 @@ const selectAllCheckbox = document.getElementById('select-all');
         const fileExtension = (download.filename || '').split('.').pop().toLowerCase();
         const categoryIcon = getCategoryIconByExtension(fileExtension) || getCategoryIcon(download.category);
         
+        // Create download items
+        const statusIcon = download.status === 'completed' ? 'fa-check-circle' :
+                          download.status === 'downloading' ? 'fa-circle-notch fa-spin' :
+                          download.status === 'paused' ? 'fa-pause-circle' :
+                          download.status === 'queued' ? 'fa-clock' :
+                          download.status === 'scheduled' ? 'fa-calendar-alt' :
+                          'fa-exclamation-circle';
+        
+        const statusClass = download.status === 'completed' ? 'status-completed' :
+                           download.status === 'downloading' ? 'status-downloading' :
+                           download.status === 'paused' ? 'status-paused' :
+                           download.status === 'queued' ? 'status-queued' :
+                           download.status === 'scheduled' ? 'status-scheduled' :
+                           'status-failed';
+        
+        const statusText = download.status === 'completed' ? 'Completed' :
+                          download.status === 'downloading' ? 'Downloading' :
+                          download.status === 'paused' ? 'Paused' :
+                          download.status === 'queued' ? 'Queued' :
+                          download.status === 'scheduled' ? 'Scheduled' :
+                          'Failed';
+                          
+        // Format scheduled time for display if applicable
+        let scheduleInfo = '';
+        if (download.status === 'scheduled' && download.schedule && download.schedule.scheduled_time) {
+            const scheduleDate = new Date(download.schedule.scheduled_time);
+            const formattedDate = scheduleDate.toLocaleDateString();
+            const formattedTime = scheduleDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            
+            scheduleInfo = `<div class="schedule-info">${formattedDate} ${formattedTime}</div>`;
+            if (download.schedule.recurrence) {
+                const recurrenceText = download.schedule.recurrence === 'daily' ? 'Daily' : 
+                                      download.schedule.recurrence === 'weekly' ? 'Weekly' : '';
+                if (recurrenceText) {
+                    scheduleInfo += `<div class="recurrence-info">${recurrenceText}</div>`;
+                }
+            }
+        }
+        
         html += `
             <div class="download-item" data-id="${id}">
                 <div class="item-checkbox">
@@ -892,8 +1466,9 @@ const selectAllCheckbox = document.getElementById('select-all');
                 </div>
                 <div class="item-cell item-size">${formatSize(download.downloaded)} / ${formatSize(download.size)}</div>
                 <div class="item-cell item-status">
-                    <span class="status-badge ${download.status}">
-                        <span class="status-text">${download.status}</span>
+                    <span class="status-badge ${statusClass}">
+                        <i class="fa-solid ${statusIcon}"></i>
+                        <span class="status-text">${statusText}</span>
                         <div class="progress-bar-container">
                             <div class="progress-bar ${progressBarClass}" style="width: ${progress}%"></div>
                         </div>
@@ -902,6 +1477,7 @@ const selectAllCheckbox = document.getElementById('select-all');
                 <div class="item-cell item-speed">${formatSpeed(download.speed)}</div>
                 <div class="item-cell item-time">${formatTimeLeft(download.time_left)}</div>
                 <div class="item-cell item-date">${formatDate(download.date_added)}</div>
+                <div class="item-cell item-schedule">${scheduleInfo}</div>
             </div>
         `;
     }
@@ -1020,7 +1596,7 @@ async function resumeSelectedDownloads() {
                 successCount++;
                 console.log(`Successfully resumed download ${id}`);
             }
-    } catch (error) {
+        } catch (error) {
             console.error(`Error resuming download ${id}:`, error);
             failedCount++;
             errors.push(`Failed to resume download ${id}: ${error.message || "Unknown error"}`);
@@ -1044,62 +1620,102 @@ async function resumeSelectedDownloads() {
 async function pauseSelectedDownloads() {
     if (selectedDownloads.size === 0) {
         console.warn("No downloads selected to pause");
+        showNotification("No downloads selected to pause", "warning");
         return;
     }
 
     let successCount = 0;
+    let failedCount = 0;
+    const errors = [];
+    
     for (const id of selectedDownloads) {
         try {
+            console.log(`Attempting to pause download ${id}`);
             const result = await eel.pause_download(id)();
             
             // Check for error responses
             if (result && result.error) {
                 console.error(`Error pausing download ${id}:`, result.error);
+                failedCount++;
+                errors.push(`Failed to pause download ${id}: ${result.error}`);
             } else {
                 successCount++;
                 console.log(`Successfully paused download ${id}`);
+                
+                // Update download in local cache
+                if (downloads[id]) {
+                    downloads[id] = result;
+                }
             }
         } catch (error) {
             console.error(`Error pausing download ${id}:`, error);
+            failedCount++;
+            errors.push(`Failed to pause download ${id}: ${error.message || "Unknown error"}`);
         }
     }
     
-    // Show a notification if successful
+    // Show notifications based on results
     if (successCount > 0) {
         showNotification(`Paused ${successCount} download(s)`, 'success');
     }
+    
+    if (failedCount > 0) {
+        console.error(`Failed to pause ${failedCount} downloads:`, errors);
+        showNotification(`Failed to pause ${failedCount} download(s). Check console for details.`, 'error');
+    }
+    
+    // Refresh the downloads list
+    await updateDownloads(true);
 }
 
 async function deleteSelectedDownloads() {
     if (selectedDownloads.size === 0) {
         console.warn("No downloads selected to delete");
+        showNotification("No downloads selected to delete", "warning");
         return;
     }
     
     if (confirm('Are you sure you want to delete the selected downloads?')) {
         let successCount = 0;
+        let failedCount = 0;
         const toDelete = [...selectedDownloads]; // Make a copy of the selected IDs
         
         for (const id of toDelete) {
             try {
+                console.log(`Attempting to delete download ${id}`);
                 const result = await eel.delete_download(id, false)();
+                
                 if (result === true) {
                     successCount++;
                     selectedDownloads.delete(id); // Remove from selection
                     console.log(`Successfully deleted download ${id}`);
+                    
+                    // Remove from local cache
+                    delete downloads[id];
                 } else {
+                    failedCount++;
                     console.error(`Failed to delete download ${id}`);
                 }
             } catch (error) {
+                failedCount++;
                 console.error(`Error deleting download ${id}:`, error);
             }
         }
         
-        // Show a notification if successful
+        // Update selection UI
+        updateSelectionUI();
+        
+        // Show notifications based on results
         if (successCount > 0) {
             showNotification(`Deleted ${successCount} download(s)`, 'success');
-            await updateDownloads(); // Refresh the downloads list
         }
+        
+        if (failedCount > 0) {
+            showNotification(`Failed to delete ${failedCount} download(s)`, 'error');
+        }
+        
+        // Refresh the downloads list
+        await updateDownloads(true);
     }
 }
 
@@ -1189,11 +1805,19 @@ function updateStatusBar() {
 
 // Modal handling
 function openModal(modalId) {
-    document.getElementById(modalId).style.display = 'flex';
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden'; // Prevent background scrolling
+    }
 }
 
 function closeModal(modalId) {
-    document.getElementById(modalId).style.display = 'none';
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.classList.remove('active');
+        document.body.style.overflow = ''; // Restore scrolling
+    }
 }
 
 // Get category icon based on file extension

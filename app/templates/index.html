@@ -256,6 +256,70 @@
                                 <label for="download-max-retries"><i class="fa-solid fa-rotate"></i> Max Retry Attempts:</label>
                                 <input type="number" id="download-max-retries" name="max_retries" placeholder="3" min="0" max="10" value="3">
                             </div>
+                            <!-- Schedule Download Options -->
+                            <div class="form-group">
+                                <label><i class="fa-solid fa-calendar"></i> Schedule Download:</label>
+                                <div class="checkbox-option">
+                                    <input type="checkbox" id="enable-schedule" name="enable_schedule">
+                                    <label for="enable-schedule">Schedule for later</label>
+                                </div>
+                                <div class="schedule-options" style="display: none;">
+                                    <div class="form-group">
+                                        <label for="schedule-datetime"><i class="fa-solid fa-clock"></i> Start Date & Time:</label>
+                                        <input type="datetime-local" id="schedule-datetime" name="scheduled_time">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="schedule-recurrence"><i class="fa-solid fa-repeat"></i> Recurrence:</label>
+                                        <select id="schedule-recurrence" name="recurrence">
+                                            <option value="">One-time</option>
+                                            <option value="daily">Daily</option>
+                                            <option value="weekly">Weekly</option>
+                                            <option value="monthly">Monthly</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group days-of-week" style="display: none;">
+                                        <label><i class="fa-solid fa-calendar-day"></i> Days of Week:</label>
+                                        <div class="checkbox-group days-checkboxes">
+                                            <div class="checkbox-option">
+                                                <input type="checkbox" id="day-0" name="days_of_week" value="0">
+                                                <label for="day-0">Mon</label>
+                                            </div>
+                                            <div class="checkbox-option">
+                                                <input type="checkbox" id="day-1" name="days_of_week" value="1">
+                                                <label for="day-1">Tue</label>
+                                            </div>
+                                            <div class="checkbox-option">
+                                                <input type="checkbox" id="day-2" name="days_of_week" value="2">
+                                                <label for="day-2">Wed</label>
+                                            </div>
+                                            <div class="checkbox-option">
+                                                <input type="checkbox" id="day-3" name="days_of_week" value="3">
+                                                <label for="day-3">Thu</label>
+                                            </div>
+                                            <div class="checkbox-option">
+                                                <input type="checkbox" id="day-4" name="days_of_week" value="4">
+                                                <label for="day-4">Fri</label>
+                                            </div>
+                                            <div class="checkbox-option">
+                                                <input type="checkbox" id="day-5" name="days_of_week" value="5">
+                                                <label for="day-5">Sat</label>
+                                            </div>
+                                            <div class="checkbox-option">
+                                                <input type="checkbox" id="day-6" name="days_of_week" value="6">
+                                                <label for="day-6">Sun</label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group day-of-month" style="display: none;">
+                                        <label for="day-of-month-input"><i class="fa-solid fa-calendar-day"></i> Day of Month (1-31):</label>
+                                        <input type="number" id="day-of-month-input" name="day_of_month" min="1" max="31" value="1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="schedule-bandwidth"><i class="fa-solid fa-gauge-high"></i> Bandwidth Allocation (%):</label>
+                                        <input type="number" id="schedule-bandwidth" name="bandwidth_allocation" placeholder="100" min="1" max="100" value="100">
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="form-actions">
@@ -320,6 +384,114 @@
                         <button type="button" class="btn-secondary close-modal">Cancel</button>
                         <button type="submit" class="btn-primary">
                             <i class="fa-solid fa-save"></i> Save Settings
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Schedule Download Modal -->
+    <div class="modal" id="schedule-download-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2><i class="fa-solid fa-calendar"></i> Schedule Download</h2>
+                <button class="close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="schedule-download-form">
+                    <input type="hidden" id="schedule-download-id" name="download_id">
+                    <div class="form-group">
+                        <label for="schedule-download-name"><i class="fa-regular fa-file"></i> Filename:</label>
+                        <input type="text" id="schedule-download-name" disabled>
+                    </div>
+                    <div class="form-group">
+                        <label for="schedule-modal-datetime"><i class="fa-solid fa-clock"></i> Start Date & Time:</label>
+                        <input type="datetime-local" id="schedule-modal-datetime" name="scheduled_time" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="schedule-modal-recurrence"><i class="fa-solid fa-repeat"></i> Recurrence:</label>
+                        <select id="schedule-modal-recurrence" name="recurrence">
+                            <option value="">One-time</option>
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="modal-days-of-week" style="display: none;">
+                        <label><i class="fa-solid fa-calendar-day"></i> Days of Week:</label>
+                        <div class="checkbox-group days-checkboxes">
+                            <div class="checkbox-option">
+                                <input type="checkbox" id="modal-day-0" name="days_of_week" value="0">
+                                <label for="modal-day-0">Mon</label>
+                            </div>
+                            <div class="checkbox-option">
+                                <input type="checkbox" id="modal-day-1" name="days_of_week" value="1">
+                                <label for="modal-day-1">Tue</label>
+                            </div>
+                            <div class="checkbox-option">
+                                <input type="checkbox" id="modal-day-2" name="days_of_week" value="2">
+                                <label for="modal-day-2">Wed</label>
+                            </div>
+                            <div class="checkbox-option">
+                                <input type="checkbox" id="modal-day-3" name="days_of_week" value="3">
+                                <label for="modal-day-3">Thu</label>
+                            </div>
+                            <div class="checkbox-option">
+                                <input type="checkbox" id="modal-day-4" name="days_of_week" value="4">
+                                <label for="modal-day-4">Fri</label>
+                            </div>
+                            <div class="checkbox-option">
+                                <input type="checkbox" id="modal-day-5" name="days_of_week" value="5">
+                                <label for="modal-day-5">Sat</label>
+                            </div>
+                            <div class="checkbox-option">
+                                <input type="checkbox" id="modal-day-6" name="days_of_week" value="6">
+                                <label for="modal-day-6">Sun</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" id="modal-day-of-month" style="display: none;">
+                        <label for="modal-day-of-month-input"><i class="fa-solid fa-calendar-day"></i> Day of Month (1-31):</label>
+                        <input type="number" id="modal-day-of-month-input" name="day_of_month" min="1" max="31" value="1">
+                    </div>
+                    <div class="form-group">
+                        <label for="schedule-modal-bandwidth"><i class="fa-solid fa-gauge-high"></i> Bandwidth Allocation (%):</label>
+                        <input type="number" id="schedule-modal-bandwidth" name="bandwidth_allocation" placeholder="100" min="1" max="100" value="100">
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fa-solid fa-rotate"></i> Retry Settings:</label>
+                        <div class="checkbox-option">
+                            <input type="checkbox" id="schedule-modal-retry" name="retry_on_failure" checked>
+                            <label for="schedule-modal-retry">Retry on failure</label>
+                        </div>
+                        <div class="form-group indented">
+                            <label for="schedule-modal-max-retries">Max Retry Attempts:</label>
+                            <input type="number" id="schedule-modal-max-retries" name="max_schedule_retries" min="1" max="10" value="3">
+                        </div>
+                        <div class="form-group indented">
+                            <label for="schedule-modal-retry-delay">Retry Delay (minutes):</label>
+                            <input type="number" id="schedule-modal-retry-delay" name="retry_delay_minutes" min="1" max="1440" value="10">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fa-solid fa-bell"></i> Notification Settings:</label>
+                        <div class="checkbox-option">
+                            <input type="checkbox" id="schedule-modal-notify" name="notify_on_start" checked>
+                            <label for="schedule-modal-notify">Notify when scheduled download starts</label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label><i class="fa-solid fa-arrow-up"></i> Priority Settings:</label>
+                        <div class="checkbox-option">
+                            <input type="checkbox" id="schedule-modal-priority-boost" name="priority_boost">
+                            <label for="schedule-modal-priority-boost">Boost priority when scheduled download starts</label>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary close-modal">Cancel</button>
+                        <button type="submit" class="btn-primary">
+                            <i class="fa-solid fa-calendar-check"></i> Schedule Download
                         </button>
                     </div>
                 </form>
