@@ -2,7 +2,7 @@
 
 <div align="center">
   
-![XcelerateDL Logo](docs/assest/image.png)
+![XcelerateDL Logo](docs/asset/image.png)
 
 **A high-performance download manager with FastAPI backend and intuitive UI**
 
