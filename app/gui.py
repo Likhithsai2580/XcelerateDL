@@ -391,6 +391,17 @@ def run_api_server():
     return api_process
 
 
+def shutdown_scheduler():
+    """Shutdown the scheduler service properly."""
+    print("Shutting down scheduler...")
+    try:
+        # Try to send a clean shutdown request to the scheduler API endpoint
+        requests.post("http://localhost:8000/api/scheduler/shutdown", timeout=2)
+        print("Scheduler shutdown complete")
+    except Exception as e:
+        print(f"Error shutting down scheduler: {e}")
+
+
 def shutdown_api_server():
     """Shutdown the API server properly."""
     global api_process
@@ -411,6 +422,177 @@ def shutdown_api_server():
 
         api_process = None
         print("API server shutdown complete")
+
+
+@eel.expose
+def import_download_list(file_path: str) -> dict:
+    """Import a download list from a file."""
+    try:
+        if not file_path:
+            return {"error": "No file path provided"}
+
+        # Send the file path to the API
+        response = requests.post(
+            f"{API_BASE_URL}/import",
+            json={"file_path": file_path},
+            timeout=DEFAULT_REQUEST_TIMEOUT * 2,  # Longer timeout for imports
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if "error" in result:
+            return {"error": result["error"]}
+
+        return {
+            "success": True,
+            "message": f"Successfully imported {result.get('imported_count', 0)} downloads",
+            "imported_count": result.get("imported_count", 0),
+        }
+    except Exception as e:
+        print(f"Error importing download list: {e}")
+        return {"error": str(e)}
+
+
+@eel.expose
+def export_download_list(file_path: str) -> dict:
+    """Export the download list to a file."""
+    try:
+        if not file_path:
+            return {"error": "No file path provided"}
+
+        # Send the file path to the API
+        response = requests.post(
+            f"{API_BASE_URL}/export", json={"file_path": file_path}, timeout=DEFAULT_REQUEST_TIMEOUT
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if "error" in result:
+            return {"error": result["error"]}
+
+        return {
+            "success": True,
+            "message": f"Successfully exported {result.get('exported_count', 0)} downloads to {file_path}",
+        }
+    except Exception as e:
+        print(f"Error exporting download list: {e}")
+        return {"error": str(e)}
+
+
+@eel.expose
+def show_file_open_dialog(title="Select a file", file_types=None, initial_dir=None):
+    """Show a file open dialog and return the selected file path."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        # If file_types is not provided, default to common formats
+        if file_types is None:
+            file_types = [
+                ("JSON Files", "*.json"),
+                ("CSV Files", "*.csv"),
+                ("Text Files", "*.txt"),
+                ("All Files", "*.*"),
+            ]
+
+        # Create a hidden root window
+        root = tk.Tk()
+        root.withdraw()
+
+        # Show the dialog
+        file_path = filedialog.askopenfilename(
+            title=title, filetypes=file_types, initialdir=initial_dir
+        )
+
+        # Destroy the root window
+        root.destroy()
+
+        if file_path:
+            return {"success": True, "file_path": file_path}
+        else:
+            return {"success": False, "error": "No file selected"}
+    except Exception as e:
+        print(f"Error showing file open dialog: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@eel.expose
+def show_file_save_dialog(
+    title="Save as",
+    default_extension=".json",
+    file_types=None,
+    initial_dir=None,
+    initial_file="download_list.json",
+):
+    """Show a file save dialog and return the selected file path."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        # If file_types is not provided, default to JSON
+        if file_types is None:
+            file_types = [("JSON Files", "*.json"), ("All Files", "*.*")]
+
+        # Create a hidden root window
+        root = tk.Tk()
+        root.withdraw()
+
+        # Show the dialog
+        file_path = filedialog.asksaveasfilename(
+            title=title,
+            defaultextension=default_extension,
+            filetypes=file_types,
+            initialdir=initial_dir,
+            initialfile=initial_file,
+        )
+
+        # Destroy the root window
+        root.destroy()
+
+        if file_path:
+            return {"success": True, "file_path": file_path}
+        else:
+            return {"success": False, "error": "No file selected"}
+    except Exception as e:
+        print(f"Error showing file save dialog: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@eel.expose
+def open_file_location(file_path: str) -> dict:
+    """Open the directory containing a file."""
+    try:
+        import os
+        import platform
+        import subprocess
+
+        if not file_path:
+            return {"success": False, "error": "No file path provided"}
+
+        # Get the directory path
+        dir_path = os.path.dirname(file_path)
+
+        # Check if the directory exists
+        if not os.path.exists(dir_path):
+            return {"success": False, "error": f"Directory does not exist: {dir_path}"}
+
+        # Open the directory based on the platform
+        system = platform.system()
+
+        if system == "Windows":
+            # On Windows, use explorer to open the directory
+            subprocess.Popen(["explorer", dir_path])
+        elif system == "Darwin":
+            # On macOS, use open command
+            subprocess.Popen(["open", dir_path])
+        else:
+            # On Linux, use xdg-open
+            subprocess.Popen(["xdg-open", dir_path])
+
+        return {"success": True}
+    except Exception as e:
+        print(f"Error opening file location: {e}")
+        return {"success": False, "error": str(e)}
 
 
 def start_gui():
@@ -451,6 +633,9 @@ def start_gui():
     # Register shutdown handlers
     def cleanup_on_exit(*args, **kwargs):
         print("Shutting down GUI and API...")
+        # Shutdown scheduler first
+        shutdown_scheduler()
+        # Then shutdown the API server
         shutdown_api_server()
         sys.exit(0)
 
@@ -467,4 +652,5 @@ def start_gui():
     except (SystemExit, KeyboardInterrupt):
         # Handle any cleanup here
         print("Shutting down GUI...")
+        shutdown_scheduler()
         shutdown_api_server()

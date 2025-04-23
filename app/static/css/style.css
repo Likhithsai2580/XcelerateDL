@@ -775,13 +775,49 @@ body {
     }
 }
 
-/* Improve checkbox styling */
+/* Improved checkbox styling */
+/* Replace default checkbox styling */
 input[type="checkbox"] {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
     width: 18px;
     height: 18px;
+    border: 2px solid var(--border-color);
+    border-radius: 4px;
+    background-color: var(--bg-card);
     cursor: pointer;
+    position: relative;
     margin: 0;
+    transition: all 0.2s ease;
     vertical-align: middle;
+}
+
+input[type="checkbox"]:checked {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+input[type="checkbox"]:checked::before {
+    content: "\f00c"; /* FontAwesome checkmark */
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: white;
+    font-size: 11px;
+}
+
+input[type="checkbox"]:hover {
+    border-color: var(--primary-light);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+input[type="checkbox"]:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
 }
 
 .item-checkbox, .header-checkbox {
@@ -790,6 +826,60 @@ input[type="checkbox"] {
     justify-content: center;
     width: 40px;
     padding: 0 5px;
+}
+
+/* Checkbox group styles with improved styling */
+.checkbox-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+    padding: 0.5rem;
+}
+
+.checkbox-option {
+    display: flex;
+    align-items: center;
+    padding: 2px;
+}
+
+.checkbox-option input[type="checkbox"] {
+    margin-right: 0.75rem;
+}
+
+.checkbox-option label {
+    margin-bottom: 0;
+    cursor: pointer;
+    font-weight: normal;
+    font-size: 0.9rem;
+    user-select: none;
+}
+
+.checkbox-option:hover {
+    background-color: rgba(99, 102, 241, 0.05);
+    border-radius: 4px;
+}
+
+/* Days of week checkboxes */
+.days-checkboxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 5px 0;
+}
+
+.days-checkboxes .checkbox-option {
+    margin-right: 0;
+    flex: 0 0 auto;
+    min-width: 70px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+}
+
+.days-checkboxes .checkbox-option:hover {
+    border-color: var(--border-light);
 }
 
 /* Speed display improvements */
@@ -1010,32 +1100,7 @@ input[type="checkbox"] {
     margin-bottom: 1rem;
 }
 
-/* Checkbox group styles */
-.checkbox-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    margin-top: 0.75rem;
-    padding: 0.5rem;
-}
-
-.checkbox-option {
-    display: flex;
-    align-items: center;
-}
-
-.checkbox-option input[type="checkbox"] {
-    margin-right: 0.75rem;
-    cursor: pointer;
-}
-
-.checkbox-option label {
-    margin-bottom: 0;
-    cursor: pointer;
-    font-weight: normal;
-    font-size: 0.9rem;
-}
-
+/* Notifications settings styles */
 .notifications-settings {
     background-color: rgba(99, 102, 241, 0.1);
     border-radius: 8px;
@@ -1134,21 +1199,6 @@ input[type="checkbox"] {
     color: var(--warning-color);
 }
 
-/* Style days of week checkboxes */
-.days-checkboxes {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-top: 8px;
-    padding: 5px 0;
-}
-
-.days-checkboxes .checkbox-option {
-    margin-right: 0;
-    flex: 0 0 auto;
-    min-width: 70px;
-}
-
 /* Schedule options in form */
 .schedule-options {
     margin-top: 10px;
@@ -1167,4 +1217,162 @@ input[type="checkbox"] {
 /* Schedule icon in context menu */
 .context-menu-item[data-action="schedule"] i {
     color: #9c27b0;
+}
+
+/* Delete confirmation dialog */
+.delete-dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(3px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    animation: fadeIn 0.2s ease;
+}
+
+.delete-dialog-content {
+    background-color: var(--bg-card);
+    border-radius: 12px;
+    width: 400px;
+    max-width: 90%;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-light);
+    overflow: hidden;
+    animation: slideUp 0.3s ease;
+}
+
+.delete-dialog-header {
+    padding: 1.25rem;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+}
+
+.delete-dialog-header i {
+    font-size: 1.5rem;
+    margin-right: 1rem;
+    color: var(--error-color);
+}
+
+.delete-dialog-header h3 {
+    margin: 0;
+    font-size: 1.2rem;
+    color: var(--error-color);
+}
+
+.delete-dialog-body {
+    padding: 1.25rem;
+    color: var(--text-color);
+}
+
+.delete-dialog-footer {
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+}
+
+.delete-dialog-btn {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-weight: 500;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: none;
+}
+
+.delete-dialog-btn-cancel {
+    background-color: var(--bg-lighter);
+    color: var(--text-color);
+}
+
+.delete-dialog-btn-cancel:hover {
+    background-color: var(--bg-dark);
+}
+
+.delete-dialog-btn-delete {
+    background-color: var(--error-color);
+    color: white;
+}
+
+.delete-dialog-btn-delete:hover {
+    background-color: #c0392b;
+}
+
+/* Empty space context menu styles */
+.empty-space-context-menu {
+    position: absolute;
+    z-index: 1000;
+    background-color: var(--bg-card);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-light);
+    padding: 0.5rem 0;
+    min-width: 200px;
+    animation: fadeIn 0.2s ease;
+}
+
+.empty-space-menu-item {
+    padding: 0.75rem 1rem;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    transition: var(--hover-transition);
+}
+
+.empty-space-menu-item:hover {
+    background-color: var(--bg-lighter);
+    color: var(--primary-light);
+}
+
+.empty-space-menu-item i {
+    width: 24px;
+    margin-right: 0.75rem;
+    text-align: center;
+    color: var(--primary-light);
+}
+
+.empty-space-menu-separator {
+    height: 1px;
+    background-color: var(--border-color);
+    margin: 0.5rem 0;
+}
+
+/* Context menu section */
+.context-menu-section {
+    padding: 0.25rem 0;
+}
+
+/* Primary action in context menu */
+.context-menu-item.primary-action {
+    font-weight: 600;
+    color: var(--primary-light);
+}
+
+.context-menu-item.primary-action i {
+    color: var(--primary-color);
+}
+
+.context-menu-item.primary-action:hover {
+    background-color: var(--primary-glow);
+}
+
+/* Danger action in context menu */
+.context-menu-item.danger-action {
+    color: var(--error-color);
+}
+
+.context-menu-item.danger-action i {
+    color: var(--error-color);
+}
+
+.context-menu-item.danger-action:hover {
+    background-color: rgba(239, 68, 68, 0.1);
 }

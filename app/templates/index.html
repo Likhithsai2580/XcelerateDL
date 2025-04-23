@@ -191,23 +191,23 @@
                 <button class="close-modal">&times;</button>
             </div>
             <div class="modal-body">
-                <form id="new-download-form">
+                <form id="new-download-form" autocomplete="off">
                     <div class="form-group">
                         <label for="download-url"><i class="fa-solid fa-link"></i> URL:</label>
                         <input type="url" id="download-url" name="url" required
-                            placeholder="https://example.com/file.zip">
+                            placeholder="https://example.com/file.zip" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="download-filename"><i class="fa-regular fa-file"></i> Filename (optional):</label>
-                        <input type="text" id="download-filename" name="filename" placeholder="my-awesome-file.zip">
+                        <input type="text" id="download-filename" name="filename" placeholder="my-awesome-file.zip" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="download-path"><i class="fa-solid fa-folder"></i> Save Path (optional):</label>
-                        <input type="text" id="download-path" name="save_path" placeholder="C:\Downloads\">
+                        <input type="text" id="download-path" name="save_path" placeholder="C:\Downloads\" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="download-category"><i class="fa-solid fa-tag"></i> Category:</label>
-                        <select id="download-category" name="category">
+                        <select id="download-category" name="category" autocomplete="off">
                             <option value="">Auto Detect</option>
                             <option value="compressed">Compressed</option>
                             <option value="programs">Programs</option>
@@ -242,7 +242,7 @@
                         <div class="collapsible-content" style="display: none;">
                             <div class="form-group">
                                 <label for="download-priority"><i class="fa-solid fa-arrow-up-wide-short"></i> Priority:</label>
-                                <select id="download-priority" name="priority">
+                                <select id="download-priority" name="priority" autocomplete="off">
                                     <option value="2" selected>Normal</option>
                                     <option value="3">High</option>
                                     <option value="1">Low</option>
@@ -250,27 +250,27 @@
                             </div>
                             <div class="form-group">
                                 <label for="download-max-speed"><i class="fa-solid fa-gauge-high"></i> Speed Limit (KB/s, 0 = unlimited):</label>
-                                <input type="number" id="download-max-speed" name="max_speed" placeholder="0" min="0" value="0">
+                                <input type="number" id="download-max-speed" name="max_speed" placeholder="0" min="0" value="0" autocomplete="off">
                             </div>
                             <div class="form-group">
                                 <label for="download-max-retries"><i class="fa-solid fa-rotate"></i> Max Retry Attempts:</label>
-                                <input type="number" id="download-max-retries" name="max_retries" placeholder="3" min="0" max="10" value="3">
+                                <input type="number" id="download-max-retries" name="max_retries" placeholder="3" min="0" max="10" value="3" autocomplete="off">
                             </div>
                             <!-- Schedule Download Options -->
                             <div class="form-group">
                                 <label><i class="fa-solid fa-calendar"></i> Schedule Download:</label>
                                 <div class="checkbox-option">
-                                    <input type="checkbox" id="enable-schedule" name="enable_schedule">
+                                    <input type="checkbox" id="enable-schedule" name="enable_schedule" autocomplete="off">
                                     <label for="enable-schedule">Schedule for later</label>
                                 </div>
                                 <div class="schedule-options" style="display: none;">
                                     <div class="form-group">
                                         <label for="schedule-datetime"><i class="fa-solid fa-clock"></i> Start Date & Time:</label>
-                                        <input type="datetime-local" id="schedule-datetime" name="scheduled_time">
+                                        <input type="datetime-local" id="schedule-datetime" name="scheduled_time" autocomplete="off">
                                     </div>
                                     <div class="form-group">
                                         <label for="schedule-recurrence"><i class="fa-solid fa-repeat"></i> Recurrence:</label>
-                                        <select id="schedule-recurrence" name="recurrence">
+                                        <select id="schedule-recurrence" name="recurrence" autocomplete="off">
                                             <option value="">One-time</option>
                                             <option value="daily">Daily</option>
                                             <option value="weekly">Weekly</option>
@@ -281,42 +281,42 @@
                                         <label><i class="fa-solid fa-calendar-day"></i> Days of Week:</label>
                                         <div class="checkbox-group days-checkboxes">
                                             <div class="checkbox-option">
-                                                <input type="checkbox" id="day-0" name="days_of_week" value="0">
+                                                <input type="checkbox" id="day-0" name="days_of_week" value="0" autocomplete="off">
                                                 <label for="day-0">Mon</label>
                                             </div>
                                             <div class="checkbox-option">
-                                                <input type="checkbox" id="day-1" name="days_of_week" value="1">
+                                                <input type="checkbox" id="day-1" name="days_of_week" value="1" autocomplete="off">
                                                 <label for="day-1">Tue</label>
                                             </div>
                                             <div class="checkbox-option">
-                                                <input type="checkbox" id="day-2" name="days_of_week" value="2">
+                                                <input type="checkbox" id="day-2" name="days_of_week" value="2" autocomplete="off">
                                                 <label for="day-2">Wed</label>
                                             </div>
                                             <div class="checkbox-option">
-                                                <input type="checkbox" id="day-3" name="days_of_week" value="3">
+                                                <input type="checkbox" id="day-3" name="days_of_week" value="3" autocomplete="off">
                                                 <label for="day-3">Thu</label>
                                             </div>
                                             <div class="checkbox-option">
-                                                <input type="checkbox" id="day-4" name="days_of_week" value="4">
+                                                <input type="checkbox" id="day-4" name="days_of_week" value="4" autocomplete="off">
                                                 <label for="day-4">Fri</label>
                                             </div>
                                             <div class="checkbox-option">
-                                                <input type="checkbox" id="day-5" name="days_of_week" value="5">
+                                                <input type="checkbox" id="day-5" name="days_of_week" value="5" autocomplete="off">
                                                 <label for="day-5">Sat</label>
                                             </div>
                                             <div class="checkbox-option">
-                                                <input type="checkbox" id="day-6" name="days_of_week" value="6">
+                                                <input type="checkbox" id="day-6" name="days_of_week" value="6" autocomplete="off">
                                                 <label for="day-6">Sun</label>
                                             </div>
                                         </div>
                                     </div>
                                     <div class="form-group day-of-month" style="display: none;">
                                         <label for="day-of-month-input"><i class="fa-solid fa-calendar-day"></i> Day of Month (1-31):</label>
-                                        <input type="number" id="day-of-month-input" name="day_of_month" min="1" max="31" value="1">
+                                        <input type="number" id="day-of-month-input" name="day_of_month" min="1" max="31" value="1" autocomplete="off">
                                     </div>
                                     <div class="form-group">
                                         <label for="schedule-bandwidth"><i class="fa-solid fa-gauge-high"></i> Bandwidth Allocation (%):</label>
-                                        <input type="number" id="schedule-bandwidth" name="bandwidth_allocation" placeholder="100" min="1" max="100" value="100">
+                                        <input type="number" id="schedule-bandwidth" name="bandwidth_allocation" placeholder="100" min="1" max="100" value="100" autocomplete="off">
                                     </div>
                                 </div>
                             </div>
@@ -341,15 +341,15 @@
                 <button class="close-modal">&times;</button>
             </div>
             <div class="modal-body">
-                <form id="download-settings-form">
-                    <input type="hidden" id="settings-download-id" name="download_id">
+                <form id="download-settings-form" autocomplete="off">
+                    <input type="hidden" id="settings-download-id" name="download_id" autocomplete="off">
                     <div class="form-group">
                         <label for="settings-download-name"><i class="fa-regular fa-file"></i> Filename:</label>
-                        <input type="text" id="settings-download-name" disabled>
+                        <input type="text" id="settings-download-name" disabled autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="settings-priority"><i class="fa-solid fa-arrow-up-wide-short"></i> Priority:</label>
-                        <select id="settings-priority" name="priority">
+                        <select id="settings-priority" name="priority" autocomplete="off">
                             <option value="2">Normal</option>
                             <option value="3">High</option>
                             <option value="1">Low</option>
@@ -357,25 +357,25 @@
                     </div>
                     <div class="form-group">
                         <label for="settings-max-speed"><i class="fa-solid fa-gauge-high"></i> Speed Limit (KB/s, 0 = unlimited):</label>
-                        <input type="number" id="settings-max-speed" name="max_speed" placeholder="0" min="0">
+                        <input type="number" id="settings-max-speed" name="max_speed" placeholder="0" min="0" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="settings-max-retries"><i class="fa-solid fa-rotate"></i> Max Retry Attempts:</label>
-                        <input type="number" id="settings-max-retries" name="max_retries" placeholder="3" min="0" max="10">
+                        <input type="number" id="settings-max-retries" name="max_retries" placeholder="3" min="0" max="10" autocomplete="off">
                     </div>
                     <div class="form-group notifications-settings">
                         <label><i class="fa-solid fa-bell"></i> Notifications:</label>
                         <div class="checkbox-group">
                             <div class="checkbox-option">
-                                <input type="checkbox" id="settings-notify-completion" name="notify_completion" checked>
+                                <input type="checkbox" id="settings-notify-completion" name="notify_completion" checked autocomplete="off">
                                 <label for="settings-notify-completion">On Completion</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="settings-notify-failure" name="notify_failure" checked>
+                                <input type="checkbox" id="settings-notify-failure" name="notify_failure" checked autocomplete="off">
                                 <label for="settings-notify-failure">On Failure</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="settings-notify-progress" name="notify_progress">
+                                <input type="checkbox" id="settings-notify-progress" name="notify_progress" autocomplete="off">
                                 <label for="settings-notify-progress">On Progress (50%)</label>
                             </div>
                         </div>
@@ -399,19 +399,19 @@
                 <button class="close-modal">&times;</button>
             </div>
             <div class="modal-body">
-                <form id="schedule-download-form">
-                    <input type="hidden" id="schedule-download-id" name="download_id">
+                <form id="schedule-download-form" autocomplete="off">
+                    <input type="hidden" id="schedule-download-id" name="download_id" autocomplete="off">
                     <div class="form-group">
                         <label for="schedule-download-name"><i class="fa-regular fa-file"></i> Filename:</label>
-                        <input type="text" id="schedule-download-name" disabled>
+                        <input type="text" id="schedule-download-name" disabled autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="schedule-modal-datetime"><i class="fa-solid fa-clock"></i> Start Date & Time:</label>
-                        <input type="datetime-local" id="schedule-modal-datetime" name="scheduled_time" required>
+                        <input type="datetime-local" id="schedule-modal-datetime" name="scheduled_time" required autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="schedule-modal-recurrence"><i class="fa-solid fa-repeat"></i> Recurrence:</label>
-                        <select id="schedule-modal-recurrence" name="recurrence">
+                        <select id="schedule-modal-recurrence" name="recurrence" autocomplete="off">
                             <option value="">One-time</option>
                             <option value="daily">Daily</option>
                             <option value="weekly">Weekly</option>
@@ -422,69 +422,69 @@
                         <label><i class="fa-solid fa-calendar-day"></i> Days of Week:</label>
                         <div class="checkbox-group days-checkboxes">
                             <div class="checkbox-option">
-                                <input type="checkbox" id="modal-day-0" name="days_of_week" value="0">
+                                <input type="checkbox" id="modal-day-0" name="days_of_week" value="0" autocomplete="off">
                                 <label for="modal-day-0">Mon</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="modal-day-1" name="days_of_week" value="1">
+                                <input type="checkbox" id="modal-day-1" name="days_of_week" value="1" autocomplete="off">
                                 <label for="modal-day-1">Tue</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="modal-day-2" name="days_of_week" value="2">
+                                <input type="checkbox" id="modal-day-2" name="days_of_week" value="2" autocomplete="off">
                                 <label for="modal-day-2">Wed</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="modal-day-3" name="days_of_week" value="3">
+                                <input type="checkbox" id="modal-day-3" name="days_of_week" value="3" autocomplete="off">
                                 <label for="modal-day-3">Thu</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="modal-day-4" name="days_of_week" value="4">
+                                <input type="checkbox" id="modal-day-4" name="days_of_week" value="4" autocomplete="off">
                                 <label for="modal-day-4">Fri</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="modal-day-5" name="days_of_week" value="5">
+                                <input type="checkbox" id="modal-day-5" name="days_of_week" value="5" autocomplete="off">
                                 <label for="modal-day-5">Sat</label>
                             </div>
                             <div class="checkbox-option">
-                                <input type="checkbox" id="modal-day-6" name="days_of_week" value="6">
+                                <input type="checkbox" id="modal-day-6" name="days_of_week" value="6" autocomplete="off">
                                 <label for="modal-day-6">Sun</label>
                             </div>
                         </div>
                     </div>
                     <div class="form-group" id="modal-day-of-month" style="display: none;">
                         <label for="modal-day-of-month-input"><i class="fa-solid fa-calendar-day"></i> Day of Month (1-31):</label>
-                        <input type="number" id="modal-day-of-month-input" name="day_of_month" min="1" max="31" value="1">
+                        <input type="number" id="modal-day-of-month-input" name="day_of_month" min="1" max="31" value="1" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="schedule-modal-bandwidth"><i class="fa-solid fa-gauge-high"></i> Bandwidth Allocation (%):</label>
-                        <input type="number" id="schedule-modal-bandwidth" name="bandwidth_allocation" placeholder="100" min="1" max="100" value="100">
+                        <input type="number" id="schedule-modal-bandwidth" name="bandwidth_allocation" placeholder="100" min="1" max="100" value="100" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label><i class="fa-solid fa-rotate"></i> Retry Settings:</label>
                         <div class="checkbox-option">
-                            <input type="checkbox" id="schedule-modal-retry" name="retry_on_failure" checked>
+                            <input type="checkbox" id="schedule-modal-retry" name="retry_on_failure" checked autocomplete="off">
                             <label for="schedule-modal-retry">Retry on failure</label>
                         </div>
                         <div class="form-group indented">
                             <label for="schedule-modal-max-retries">Max Retry Attempts:</label>
-                            <input type="number" id="schedule-modal-max-retries" name="max_schedule_retries" min="1" max="10" value="3">
+                            <input type="number" id="schedule-modal-max-retries" name="max_schedule_retries" min="1" max="10" value="3" autocomplete="off">
                         </div>
                         <div class="form-group indented">
                             <label for="schedule-modal-retry-delay">Retry Delay (minutes):</label>
-                            <input type="number" id="schedule-modal-retry-delay" name="retry_delay_minutes" min="1" max="1440" value="10">
+                            <input type="number" id="schedule-modal-retry-delay" name="retry_delay_minutes" min="1" max="1440" value="10" autocomplete="off">
                         </div>
                     </div>
                     <div class="form-group">
                         <label><i class="fa-solid fa-bell"></i> Notification Settings:</label>
                         <div class="checkbox-option">
-                            <input type="checkbox" id="schedule-modal-notify" name="notify_on_start" checked>
+                            <input type="checkbox" id="schedule-modal-notify" name="notify_on_start" checked autocomplete="off">
                             <label for="schedule-modal-notify">Notify when scheduled download starts</label>
                         </div>
                     </div>
                     <div class="form-group">
                         <label><i class="fa-solid fa-arrow-up"></i> Priority Settings:</label>
                         <div class="checkbox-option">
-                            <input type="checkbox" id="schedule-modal-priority-boost" name="priority_boost">
+                            <input type="checkbox" id="schedule-modal-priority-boost" name="priority_boost" autocomplete="off">
                             <label for="schedule-modal-priority-boost">Boost priority when scheduled download starts</label>
                         </div>
                     </div>

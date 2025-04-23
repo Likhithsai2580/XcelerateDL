@@ -3,7 +3,7 @@ let downloads = {};
 let selectedDownloads = new Set();
 let isRefreshing = false;
 let lastRefreshTime = 0;
-const REFRESH_THROTTLE_MS = 1000; // Lowering from default to update more frequently
+const REFRESH_THROTTLE_MS = 500; // Lowering from default to update more frequently
 // Add current filter state
 let currentFilter = {
     category: 'all',
@@ -576,14 +576,16 @@ function setupContextMenu() {
     // Add right-click event listener to download items
     document.addEventListener('click', function(e) {
         // Close any open context menus when clicking elsewhere
-        const openMenus = document.querySelectorAll('.context-menu');
+        const openMenus = document.querySelectorAll('.context-menu, .empty-space-context-menu');
         openMenus.forEach(menu => menu.remove());
     });
     
-    // Listen for right clicks on download items
+    // Listen for right clicks on download items or empty space
     document.addEventListener('contextmenu', function(e) {
         // Check if clicked on a download item
         const downloadItem = e.target.closest('.download-item');
+        const downloadList = e.target.closest('.download-list-body');
+        
         if (downloadItem) {
             e.preventDefault();
             
@@ -593,14 +595,213 @@ function setupContextMenu() {
             
             // Create context menu
             createDownloadContextMenu(downloadId, e.clientX, e.clientY);
+        } 
+        // Check if clicked on empty space in download list
+        else if (downloadList) {
+            e.preventDefault();
+            
+            // Create empty space context menu
+            createEmptySpaceContextMenu(e.clientX, e.clientY);
         }
     });
+}
+
+// Create context menu for empty space
+function createEmptySpaceContextMenu(x, y) {
+    // Remove any existing context menus
+    const existingMenus = document.querySelectorAll('.context-menu, .empty-space-context-menu');
+    existingMenus.forEach(menu => menu.remove());
+    
+    // Create menu element
+    const menu = document.createElement('div');
+    menu.className = 'empty-space-context-menu';
+    
+    // Add menu items
+    let menuContent = `
+        <div class="context-menu-section">
+            <div class="empty-space-menu-item" data-action="new-download">
+                <i class="fa-solid fa-plus"></i> Add New Download
+            </div>
+            <div class="empty-space-menu-separator"></div>
+            <div class="empty-space-menu-item" data-action="import-list">
+                <i class="fa-solid fa-file-import"></i> Import Download List...
+            </div>
+            <div class="empty-space-menu-item" data-action="export-list">
+                <i class="fa-solid fa-file-export"></i> Export Download List
+            </div>
+            <div class="empty-space-menu-separator"></div>
+            <div class="empty-space-menu-item" data-action="select-all">
+                <i class="fa-solid fa-check-double"></i> Select All
+            </div>
+            <div class="empty-space-menu-item" data-action="select-none">
+                <i class="fa-solid fa-xmark"></i> Select None
+            </div>
+            <div class="empty-space-menu-separator"></div>
+            <div class="empty-space-menu-item" data-action="settings">
+                <i class="fa-solid fa-gear"></i> Settings
+            </div>
+            <div class="empty-space-menu-item" data-action="refresh">
+                <i class="fa-solid fa-arrows-rotate"></i> Refresh
+            </div>
+        </div>
+    `;
+    
+    // Set menu content
+    menu.innerHTML = menuContent;
+    
+    // Add event listeners for menu items
+    menu.querySelectorAll('.empty-space-menu-item').forEach(item => {
+        item.addEventListener('click', handleEmptySpaceMenuAction);
+    });
+    
+    // Position the menu
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    
+    // Add to document
+    document.body.appendChild(menu);
+    
+    // Adjust position if menu is outside viewport
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.right > window.innerWidth) {
+        menu.style.left = `${window.innerWidth - menuRect.width - 10}px`;
+    }
+    if (menuRect.bottom > window.innerHeight) {
+        menu.style.top = `${window.innerHeight - menuRect.height - 10}px`;
+    }
+}
+
+// Function to handle file selection for imports
+async function selectFileForImport() {
+    try {
+        const result = await eel.show_file_open_dialog(
+            "Select file to import",
+            [
+                ['JSON Files', '*.json'],
+                ['CSV Files', '*.csv'],
+                ['Text Files', '*.txt'],
+                ['All Files', '*.*']
+            ]
+        )();
+        
+        if (!result.success) {
+            throw new Error(result.error || 'File selection canceled');
+        }
+        
+        return result.file_path;
+    } catch (error) {
+        console.error('Error in file selection:', error);
+        throw error;
+    }
+}
+
+// Function to handle file selection for exports
+async function selectFileForExport() {
+    try {
+        const result = await eel.show_file_save_dialog(
+            "Save download list as",
+            ".json",
+            [
+                ['JSON Files', '*.json'],
+                ['All Files', '*.*']
+            ],
+            null,
+            "download_list.json"
+        )();
+        
+        if (!result.success) {
+            throw new Error(result.error || 'File selection canceled');
+        }
+        
+        return result.file_path;
+    } catch (error) {
+        console.error('Error in file selection:', error);
+        throw error;
+    }
+}
+
+// Handle empty space context menu item clicks
+function handleEmptySpaceMenuAction(e) {
+    const action = this.getAttribute('data-action');
+    
+    // Close the menu
+    const menu = this.closest('.empty-space-context-menu');
+    if (menu) menu.remove();
+    
+    // Handle different actions
+    switch (action) {
+        case 'new-download':
+            openNewDownloadModal();
+            break;
+        case 'import-list':
+            // Import download list
+            (async () => {
+                try {
+                    showLoadingOverlay();
+                    const filePath = await selectFileForImport();
+                    const result = await eel.import_download_list(filePath)();
+                    
+                    if (result.error) {
+                        showNotification(`Import failed: ${result.error}`, 'error');
+                    } else {
+                        showNotification(result.message, 'success');
+                        // Refresh download list
+                        await updateDownloads(true);
+                    }
+                } catch (error) {
+                    console.error('Error importing download list:', error);
+                    if (error !== 'File selection canceled') {
+                        showNotification('Failed to import download list.', 'error');
+                    }
+                } finally {
+                    hideLoadingOverlay();
+                }
+            })();
+            break;
+        case 'export-list':
+            // Export download list
+            (async () => {
+                try {
+                    showLoadingOverlay();
+                    const filePath = await selectFileForExport();
+                    const result = await eel.export_download_list(filePath)();
+                    
+                    if (result.error) {
+                        showNotification(`Export failed: ${result.error}`, 'error');
+                    } else {
+                        showNotification(result.message, 'success');
+                    }
+                } catch (error) {
+                    console.error('Error exporting download list:', error);
+                    if (error.message !== 'Export canceled') {
+                        showNotification('Failed to export download list.', 'error');
+                    }
+                } finally {
+                    hideLoadingOverlay();
+                }
+            })();
+            break;
+        case 'settings':
+            // Open settings dialog
+            openSettingsModal();
+            break;
+        case 'refresh':
+            // Refresh download list
+            updateDownloads(true);
+            break;
+        case 'select-all':
+            handleSelectAll(e);
+            break;
+        case 'select-none':
+            handleSelectNone(e);
+            break;
+    }
 }
 
 // Create context menu for download items
 function createDownloadContextMenu(downloadId, x, y) {
     // Remove any existing context menus
-    const existingMenus = document.querySelectorAll('.context-menu');
+    const existingMenus = document.querySelectorAll('.context-menu, .empty-space-context-menu');
     existingMenus.forEach(menu => menu.remove());
     
     // Get download data
@@ -612,7 +813,30 @@ function createDownloadContextMenu(downloadId, x, y) {
     menu.className = 'context-menu';
     
     // Add menu items based on download status
-    let menuContent = '';
+    let menuContent = '<div class="context-menu-section">';
+    
+    // Status-specific primary actions
+    if (download.status === 'downloading') {
+        menuContent += `
+            <div class="context-menu-item primary-action" data-action="pause" data-id="${downloadId}">
+                <i class="fa-solid fa-pause"></i> Pause
+            </div>
+        `;
+    } else if (download.status === 'paused' || download.status === 'queued' || download.status === 'failed') {
+        menuContent += `
+            <div class="context-menu-item primary-action" data-action="resume" data-id="${downloadId}">
+                <i class="fa-solid fa-play"></i> Resume
+            </div>
+        `;
+    } else if (download.status === 'completed') {
+        menuContent += `
+            <div class="context-menu-item primary-action" data-action="open" data-id="${downloadId}">
+                <i class="fa-solid fa-folder-open"></i> Open File
+            </div>
+        `;
+    }
+    
+    menuContent += `<div class="empty-space-menu-separator"></div>`;
     
     // Common actions for all downloads
     menuContent += `
@@ -621,28 +845,27 @@ function createDownloadContextMenu(downloadId, x, y) {
         </div>
     `;
     
-    // Add status-specific actions
-    if (download.status === 'downloading') {
+    // Additional status-specific actions
+    if (download.status === 'paused' || download.status === 'queued' || download.status === 'failed') {
         menuContent += `
-            <div class="context-menu-item" data-action="pause" data-id="${downloadId}">
-                <i class="fa-solid fa-pause"></i> Pause
-            </div>
-        `;
-    } else if (download.status === 'paused' || download.status === 'queued' || download.status === 'failed') {
-        menuContent += `
-            <div class="context-menu-item" data-action="resume" data-id="${downloadId}">
-                <i class="fa-solid fa-play"></i> Resume
-            </div>
             <div class="context-menu-item" data-action="schedule" data-id="${downloadId}">
                 <i class="fa-solid fa-calendar"></i> Schedule
             </div>
         `;
     }
     
+    // Copy URL
+    menuContent += `
+        <div class="context-menu-item" data-action="copy-url" data-id="${downloadId}">
+            <i class="fa-solid fa-copy"></i> Copy URL
+        </div>
+    `;
+    
+    // Add file location (for completed downloads)
     if (download.status === 'completed') {
         menuContent += `
-            <div class="context-menu-item" data-action="open" data-id="${downloadId}">
-                <i class="fa-solid fa-folder-open"></i> Open File
+            <div class="context-menu-item" data-action="open-location" data-id="${downloadId}">
+                <i class="fa-solid fa-folder"></i> Open File Location
             </div>
         `;
     }
@@ -652,13 +875,15 @@ function createDownloadContextMenu(downloadId, x, y) {
     
     // Delete options
     menuContent += `
-        <div class="context-menu-item" data-action="delete" data-id="${downloadId}">
+        <div class="context-menu-item danger-action" data-action="delete" data-id="${downloadId}">
             <i class="fa-solid fa-trash"></i> Delete
         </div>
-        <div class="context-menu-item" data-action="delete-file" data-id="${downloadId}">
+        <div class="context-menu-item danger-action" data-action="delete-file" data-id="${downloadId}">
             <i class="fa-solid fa-trash-alt"></i> Delete with File
         </div>
     `;
+    
+    menuContent += '</div>'; // Close section
     
     // Set menu content
     menu.innerHTML = menuContent;
@@ -683,6 +908,63 @@ function createDownloadContextMenu(downloadId, x, y) {
     if (menuRect.bottom > window.innerHeight) {
         menu.style.top = `${window.innerHeight - menuRect.height - 10}px`;
     }
+}
+
+// Show custom delete confirmation dialog
+function showDeleteConfirmation(downloadId, withFile = false) {
+    // Create dialog elements
+    const dialog = document.createElement('div');
+    dialog.className = 'delete-dialog';
+    
+    const dialogContent = `
+        <div class="delete-dialog-content">
+            <div class="delete-dialog-header">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                <h3>Confirm Delete</h3>
+            </div>
+            <div class="delete-dialog-body">
+                <p>${withFile ? 
+                    'Are you sure you want to delete this download AND the associated file?' : 
+                    'Are you sure you want to delete this download?'}</p>
+                <p class="text-dim">${withFile ? 
+                    'This action will permanently remove the downloaded file from your system.' : 
+                    'The downloaded file will remain on your system.'}</p>
+            </div>
+            <div class="delete-dialog-footer">
+                <button class="delete-dialog-btn delete-dialog-btn-cancel">Cancel</button>
+                <button class="delete-dialog-btn delete-dialog-btn-delete">Delete</button>
+            </div>
+        </div>
+    `;
+    
+    dialog.innerHTML = dialogContent;
+    document.body.appendChild(dialog);
+    
+    // Add event listeners
+    const cancelBtn = dialog.querySelector('.delete-dialog-btn-cancel');
+    const deleteBtn = dialog.querySelector('.delete-dialog-btn-delete');
+    
+    cancelBtn.addEventListener('click', () => {
+        dialog.remove();
+    });
+    
+    deleteBtn.addEventListener('click', async () => {
+        try {
+            const success = await eel.delete_download(downloadId, withFile)();
+            if (success) {
+                delete downloads[downloadId];
+                renderDownloads();
+                showNotification(`Download ${withFile ? 'and file ' : ''}deleted successfully.`, 'success');
+            } else {
+                showNotification(`Failed to delete download${withFile ? ' and file' : ''}.`, 'error');
+            }
+        } catch (error) {
+            console.error(`Error deleting download${withFile ? ' and file' : ''}:`, error);
+            showNotification(`Failed to delete download${withFile ? ' and file' : ''}.`, 'error');
+        } finally {
+            dialog.remove();
+        }
+    });
 }
 
 // Handle context menu item clicks
@@ -748,42 +1030,37 @@ async function handleContextMenuAction(e) {
             }
             break;
             
-        case 'delete':
-            // Confirm deletion
-            if (confirm('Are you sure you want to delete this download?')) {
-                try {
-                    const success = await eel.delete_download(downloadId, false)();
+        case 'copy-url':
+            try {
+                const download = downloads[downloadId];
+                if (download && download.url) {
+                    const success = await copyToClipboard(download.url);
                     if (success) {
-                        delete downloads[downloadId];
-                        renderDownloads();
-                        showNotification('Download deleted successfully.', 'success');
+                        showNotification('URL copied to clipboard.', 'success');
                     } else {
-                        showNotification('Failed to delete download.', 'error');
+                        showNotification('Failed to copy URL.', 'error');
                     }
-                } catch (error) {
-                    console.error('Error deleting download:', error);
-                    showNotification('Failed to delete download.', 'error');
+                } else {
+                    showNotification('URL not available.', 'error');
                 }
+            } catch (error) {
+                console.error('Error copying URL:', error);
+                showNotification('Failed to copy URL.', 'error');
             }
             break;
             
+        case 'open-location':
+            openFileLocation(downloadId);
+            break;
+            
+        case 'delete':
+            // Show custom confirmation dialog
+            showDeleteConfirmation(downloadId, false);
+            break;
+            
         case 'delete-file':
-            // Confirm deletion with file
-            if (confirm('Are you sure you want to delete this download AND the associated file?')) {
-                try {
-                    const success = await eel.delete_download(downloadId, true)();
-                    if (success) {
-                        delete downloads[downloadId];
-                        renderDownloads();
-                        showNotification('Download and file deleted successfully.', 'success');
-                    } else {
-                        showNotification('Failed to delete download and file.', 'error');
-                    }
-                } catch (error) {
-                    console.error('Error deleting download and file:', error);
-                    showNotification('Failed to delete download and file.', 'error');
-                }
-            }
+            // Show custom confirmation dialog with file
+            showDeleteConfirmation(downloadId, true);
             break;
     }
 }
@@ -908,7 +1185,7 @@ document.getElementById('new-download-form').addEventListener('submit', async (e
         closeModal('new-download-modal');
         e.target.reset();
         showNotification(`Added download: ${result.filename || 'Unknown file'}`, 'success');
-        await updateDownloads(true);
+        await updateDownloads();
         hideLoadingOverlay();
     } catch (error) {
         console.error('Error adding download:', error);
@@ -2066,4 +2343,77 @@ async function open_download(downloadId) {
         showNotification(`Error opening file: ${error.message}`, 'error');
         throw error;
     }
-} 
+}
+
+// Handle select none action
+function handleSelectNone() {
+    // Clear selected downloads
+    selectedDownloads.clear();
+    
+    // Update selection state in UI
+    const checkboxes = document.querySelectorAll('.download-checkbox input[type="checkbox"]');
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = false;
+    });
+    
+    // Update select all checkbox
+    const selectAllCheckbox = document.getElementById('select-all');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+    }
+    
+    // Update selection UI (toolbar buttons etc.)
+    updateSelectionUI();
+}
+
+// Copy text to clipboard
+async function copyToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch (err) {
+        console.error('Failed to copy text: ', err);
+        
+        // Fallback for browsers that don't support clipboard API
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            return true;
+        } catch (err) {
+            document.body.removeChild(textArea);
+            console.error('Failed to copy text using fallback: ', err);
+            return false;
+        }
+    }
+}
+
+// Open file location
+async function openFileLocation(downloadId) {
+    try {
+        const download = downloads[downloadId];
+        if (!download) {
+            showNotification('Download information not found.', 'error');
+            return;
+        }
+        
+        // Use Eel to open the directory
+        const result = await eel.open_file_location(download.save_path)();
+        
+        if (!result.success) {
+            showNotification(`Error: ${result.error || 'Failed to open location'}`, 'error');
+        }
+    } catch (error) {
+        console.error('Error opening file location:', error);
+        showNotification('Failed to open file location.', 'error');
+    }
+}
