@@ -37,23 +37,24 @@
 - [Configuration](#-configuration)
 - [Architecture](#-architecture)
 - [Contributing](#-contributing)
+- [Development](#-development)
 - [License](#-license)
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.8+ (3.13 recommended)
 - For YouTube downloads: ffmpeg
 
-## 🔧 Installation
+### Quick Install
 
 ```bash
 # Clone the repository
 git clone https://github.com/yourusername/XcelerateDL.git
 cd XcelerateDL
 
-# Create and activate virtual environment (recommended)
+# Create and activate virtual environment
 python -m venv venv
 # On Windows:
 venv\Scripts\activate
@@ -62,11 +63,50 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Start the application
+python -m app.main --gui
 ```
+
+## 🔧 Installation
+
+### Detailed Steps
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/yourusername/XcelerateDL.git
+   cd XcelerateDL
+   ```
+
+2. **Create and activate a virtual environment**:
+   ```bash
+   python -m venv venv
+   
+   # On Windows:
+   venv\Scripts\activate
+   
+   # On macOS/Linux:
+   source venv/bin/activate
+   ```
+
+3. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Install ffmpeg** (required for YouTube downloads):
+   - **Windows**: [Download ffmpeg](https://www.gyan.dev/ffmpeg/builds/) and add it to your PATH
+   - **macOS**: `brew install ffmpeg`
+   - **Linux**: `sudo apt install ffmpeg` (Debian/Ubuntu) or `sudo yum install ffmpeg` (CentOS/RHEL)
+
+5. **Run the application**:
+   ```bash
+   python -m app.main --gui
+   ```
 
 ## 🖥️ Usage
 
-XcelerateDL can be used in two modes:
+XcelerateDL offers two operation modes:
 
 ### GUI Mode
 
@@ -75,6 +115,14 @@ For a complete desktop experience with a user-friendly interface:
 ```bash
 python -m app.main --gui
 ```
+
+This launches a desktop application with all features accessible through an intuitive interface:
+
+- Drag and drop URLs for quick downloads
+- Monitor download progress in real-time
+- Organize downloads by category
+- Set bandwidth limits and priorities
+- Schedule downloads for off-peak hours
 
 ### API Mode
 
@@ -88,7 +136,7 @@ python -m app.main
 python -m app.main --api-only --host 127.0.0.1 --port 8080
 ```
 
-After starting in API mode, access the web interface at `http://localhost:8000` (or your custom host/port)
+After starting in API mode, access the web interface at `http://localhost:8000` (or your custom host/port).
 
 ## 🔌 API Documentation
 
@@ -96,7 +144,9 @@ Once the server is running, access the interactive API documentation at:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
-### Adding a Download
+### Basic API Examples
+
+#### Adding a Download
 
 ```bash
 curl -X POST http://localhost:8000/api/downloads \
@@ -104,7 +154,7 @@ curl -X POST http://localhost:8000/api/downloads \
   -d '{"url": "https://example.com/file.zip"}'
 ```
 
-### YouTube Download
+#### YouTube Download
 
 ```bash
 curl -X POST http://localhost:8000/api/downloads \
@@ -112,7 +162,7 @@ curl -X POST http://localhost:8000/api/downloads \
   -d '{"url": "https://youtube.com/watch?v=VIDEO_ID", "is_youtube": true, "youtube_type": "video"}'
 ```
 
-### Scheduling a Download
+#### Scheduling a Download
 
 ```bash
 curl -X POST http://localhost:8000/api/downloads \
@@ -120,7 +170,7 @@ curl -X POST http://localhost:8000/api/downloads \
   -d '{"url": "https://example.com/large-file.zip", "schedule": {"scheduled_time": "2023-12-31T23:00:00", "recurrence": "weekly", "days_of_week": [0, 3]}}'
 ```
 
-### Managing Downloads
+#### Managing Downloads
 
 ```bash
 # List all downloads
@@ -152,6 +202,10 @@ curl -X POST http://localhost:8000/api/downloads/bandwidth/settings \
   -d '{"total_bandwidth": 10485760, "allocation_mode": "priority"}'
 ```
 
+### Full API Reference
+
+For a complete list of available endpoints, parameters, and responses, see our [API Reference Section](#-api-reference) below.
+
 ## 📘 API Reference
 
 ### Endpoints
@@ -172,7 +226,11 @@ curl -X POST http://localhost:8000/api/downloads/bandwidth/settings \
 | `/api/downloads/{id}/schedule` | POST | Schedule a download for a specific time |
 | `/api/downloads/bandwidth/settings` | GET | Get current bandwidth settings |
 | `/api/downloads/bandwidth/settings` | POST | Update bandwidth settings |
+| `/api/downloads/scheduler/settings` | POST | Update scheduler check interval |
 | `/api/downloads/{id}/tags` | POST | Update tags for a download |
+| `/api/downloads/batch-schedule` | POST | Schedule multiple downloads at once |
+| `/api/downloads/smart-schedule` | POST | Intelligently schedule multiple downloads |
+| `/api/downloads/schedule-based-on-bandwidth` | POST | Schedule downloads based on available bandwidth |
 
 ### Download Parameters
 
@@ -191,8 +249,9 @@ When creating a download, you can specify these parameters:
   "max_retries": 3,  // Optional: Max retry attempts for failed downloads
   "schedule": {  // Optional: Schedule settings
     "scheduled_time": "2023-12-31T23:00:00",  // When to start the download
-    "recurrence": "weekly",  // "daily", "weekly", or null for one-time
+    "recurrence": "weekly",  // "daily", "weekly", "monthly", or null for one-time
     "days_of_week": [0, 3],  // For weekly: 0=Monday, 6=Sunday
+    "day_of_month": 15,  // For monthly: 1-31
     "bandwidth_allocation": 30  // Optional: Percentage of bandwidth to use (0-100)
   },
   "bandwidth_allocation": 20,  // Optional: Percentage of bandwidth to allocate
@@ -241,7 +300,14 @@ The bandwidth management system allows intelligent allocation of network resourc
   "custom_allocations": {  // Only used in custom mode
     "download-id-1": 60,  // Percentage allocation (0-100)
     "download-id-2": 20
-  }
+  },
+  "max_concurrent_downloads": 5,  // Maximum number of concurrent downloads
+  "enable_scheduling": true,  // Enable smart scheduling
+  "peak_hours_throttling": false,  // Throttle during peak hours 
+  "peak_hours_start": 18,  // Peak hours start (6 PM)
+  "peak_hours_end": 23,  // Peak hours end (11 PM)
+  "peak_hours_limit": 5242880,  // Bandwidth limit during peak hours (5 MB/s)
+  "scheduler_check_interval": 60  // Seconds between scheduler checks
 }
 ```
 
@@ -251,9 +317,17 @@ Schedule downloads for specific times to better manage bandwidth usage:
 
 ### Scheduling Options
 - One-time schedules (specific date and time)
-- Recurring schedules (daily or weekly)
+- Recurring schedules (daily, weekly, or monthly)
 - Day-of-week selection for weekly schedules
+- Day-of-month selection for monthly schedules
 - Per-download bandwidth allocation during scheduled times
+- Peak hours detection and throttling
+
+### Advanced Scheduling Features
+- Smart scheduling to distribute downloads across time periods
+- Bandwidth-based scheduling to complete downloads by target time
+- Auto-retry for failed scheduled downloads
+- Custom schedule descriptions and notifications
 
 ## 🔍 Advanced Search
 
@@ -282,12 +356,23 @@ XcelerateDL's behavior can be configured through:
 - **Settings UI**: Configure through the application interface
 - **API Endpoints**: Programmatically update settings
 
+### Command Line Arguments
+
+```
+--gui               Start the GUI version
+--api-only          Start only the API server
+--port PORT         API server port (default: 8000)
+--host HOST         API server host (default: 0.0.0.0)
+```
+
 ### Configurable Settings
 - Download folder location
 - Maximum concurrent downloads
 - Default download priorities
 - Speed limits
 - Global bandwidth settings
+- Scheduler check interval
+- Peak hours configuration
 
 ## 🏗️ Architecture
 
@@ -308,6 +393,7 @@ The heart of XcelerateDL is the `DownloadManager` class which:
 - Manages file download operations using async I/O
 - Handles YouTube video/audio downloading through yt-dlp
 - Maintains persistent download state
+- Manages download scheduling and bandwidth allocation
 
 #### API Layer
 
@@ -315,7 +401,7 @@ The FastAPI-based API provides:
 - RESTful endpoints for managing downloads
 - WebSocket connections for real-time updates
 - Swagger documentation for easy integration
-- JWT authentication for secure access
+- Comprehensive error handling
 
 #### User Interface
 
@@ -325,13 +411,108 @@ XcelerateDL offers dual interfaces:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Here's how you can contribute:
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+### Getting Started
+
+1. Fork the repository on GitHub
+2. Clone your fork to your local machine
+3. Set up the development environment
+4. Create a new branch for your feature or bugfix
+
+### Making Changes
+
+1. Make your changes following the coding style guidelines
+2. Add tests for your changes
+3. Run the existing tests to ensure nothing breaks
+4. Update documentation as needed
+
+### Submitting Changes
+
+1. Commit your changes with clear, descriptive commit messages
+2. Push your changes to your fork
+3. Create a pull request against the main repository
+4. Wait for review and address any feedback
+
+### Coding Standards
+
+- Follow PEP 8 guidelines for Python code
+- Use type hints wherever possible
+- Document functions and classes with docstrings
+- Format code with the project's specified formatter
+
+### Reporting Issues
+
+- Use the GitHub issue tracker to report bugs
+- Include detailed steps to reproduce the bug
+- Specify your operating system and Python version
+- Include logs or screenshots if applicable
+
+## 🧪 Development
+
+### Setting Up a Development Environment
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/XcelerateDL.git
+cd XcelerateDL
+
+# Create and activate virtual environment
+python -m venv venv
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install development dependencies
+pip install -r requirements.txt
+```
+
+### Project Structure
+
+```
+XcelerateDL/
+├─ app/                   # Main application code
+│  ├─ api/                # API endpoints
+│  ├─ models/             # Data models
+│  ├─ services/           # Business logic
+│  ├─ static/             # Static assets for web UI
+│  ├─ templates/          # HTML templates
+│  ├─ gui.py              # GUI implementation
+│  ├─ main.py             # Application entry point
+├─ docs/                  # Documentation
+├─ downloads/             # Default download directory
+├─ requirements.txt       # Python dependencies
+├─ pyproject.toml         # Project metadata and configuration
+├─ README.md              # Project documentation
+├─ FUTUREPLAN.md          # Future development roadmap
+```
+
+### Running in Development Mode
+
+```bash
+# Start with auto-reload for API development
+python -m app.main --api-only --host 127.0.0.1 --port 8000
+
+# Start GUI mode
+python -m app.main --gui
+```
+
+### Cleaning Downloads
+
+To clean all downloads (useful during development):
+
+```bash
+# On Windows
+delete_downloads.bat
+
+# On macOS/Linux
+rm -rf downloads/*
+```
+
+### Future Development
+
+For a detailed roadmap of planned features and improvements, see [FUTUREPLAN.md](FUTUREPLAN.md).
 
 ## 📄 License
 
@@ -341,4 +522,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - [FastAPI](https://fastapi.tiangolo.com/) - For the powerful API framework
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) - For YouTube download functionality
-- [Eel](https://github.com/ChrisKnott/Eel) - For the GUI framework 
+- [Eel](https://github.com/ChrisKnott/Eel) - For the GUI framework
+- [aiohttp](https://docs.aiohttp.org/) - For asynchronous HTTP requests
+- [Pydantic](https://pydantic-docs.helpmanual.io/) - For data validation
