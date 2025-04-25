@@ -428,43 +428,84 @@ class DownloadManager:
         # Create a directory for the storage file if it doesn't exist
         os.makedirs(os.path.dirname(self.storage_file), exist_ok=True)
 
-        # Convert downloads to serializable format
-        downloads_data = {}
-        for download_id, download in self.downloads.items():
-            try:
-                # Convert model to dict and handle non-serializable types
-                download_dict = download.model_dump()
+        # Check if we already have a save in progress
+        if hasattr(self, "_save_in_progress") and self._save_in_progress:
+            # Skip this save operation as another one is already happening
+            return False
 
-                # Convert datetime to ISO format
-                download_dict["date_added"] = download_dict["date_added"].isoformat()
-
-                # Convert scheduled_time to ISO format if it exists
-                if download_dict.get("schedule") and download_dict["schedule"].get(
-                    "scheduled_time"
-                ):
-                    download_dict["schedule"]["scheduled_time"] = download_dict["schedule"][
-                        "scheduled_time"
-                    ].isoformat()
-
-                # Store URL as string
-                download_dict["url"] = str(download_dict["url"])
-
-                # Remove callback functions which are not serializable
-                download_dict.pop("cancel_callback", None)
-                download_dict.pop("pause_resume_callback", None)
-
-                downloads_data[download_id] = download_dict
-            except Exception as e:
-                print(f"Error serializing download {download_id}: {e}")
-                continue
+        # Set flag to indicate a save is in progress
+        self._save_in_progress = True
 
         try:
-            async with aiofiles.open(self.storage_file, "w") as f:
-                await f.write(json.dumps(downloads_data, indent=2))
-            return True
-        except Exception as e:
-            print(f"Error saving downloads: {e}")
-            return False
+            # Convert downloads to serializable format
+            downloads_data = {}
+            for download_id, download in self.downloads.items():
+                try:
+                    # Skip downloads with invalid statuses to prevent corrupt data
+                    if not download.status or not isinstance(download.status, DownloadStatus):
+                        print(f"Skipping download with invalid status: {download_id}")
+                        continue
+
+                    # Convert model to dict and handle non-serializable types
+                    download_dict = download.model_dump()
+
+                    # Convert datetime to ISO format
+                    download_dict["date_added"] = download_dict["date_added"].isoformat()
+
+                    # Convert scheduled_time to ISO format if it exists
+                    if download_dict.get("schedule") and download_dict["schedule"].get(
+                        "scheduled_time"
+                    ):
+                        download_dict["schedule"]["scheduled_time"] = download_dict["schedule"][
+                            "scheduled_time"
+                        ].isoformat()
+
+                    # Store URL as string
+                    download_dict["url"] = str(download_dict["url"])
+
+                    # Remove callback functions which are not serializable
+                    download_dict.pop("cancel_callback", None)
+                    download_dict.pop("pause_resume_callback", None)
+
+                    # Remove any temporary attributes we added
+                    if "_last_broadcast_time" in download_dict:
+                        download_dict.pop("_last_broadcast_time", None)
+
+                    downloads_data[download_id] = download_dict
+                except Exception as e:
+                    print(f"Error serializing download {download_id}: {e}")
+                    continue
+
+            try:
+                # Use a temporary file for writing to avoid data corruption
+                temp_file = f"{self.storage_file}.tmp"
+                async with aiofiles.open(temp_file, "w") as f:
+                    await f.write(json.dumps(downloads_data, indent=2))
+
+                # Validate the JSON was written correctly
+                async with aiofiles.open(temp_file) as f:
+                    content = await f.read()
+                    # Try to parse the JSON to ensure it's valid
+                    json.loads(content)
+
+                # Only replace the original file if temp file is valid
+                import shutil
+
+                shutil.move(temp_file, self.storage_file)
+
+                return True
+            except Exception as e:
+                print(f"Error saving downloads: {e}")
+                # Try to clean up temp file if it exists
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                return False
+        finally:
+            # Clear the flag when done
+            self._save_in_progress = False
 
     async def save_bandwidth_settings(self):
         """Save bandwidth settings to a JSON file"""
@@ -492,22 +533,101 @@ class DownloadManager:
                 content = await f.read()
                 downloads_data = json.loads(content)
 
-            # Convert JSON data back to download objects
+            # First pass to validate the data
+            valid_downloads = {}
+            duplicate_urls = {}
+
+            # Identify duplicates and track them for removal
             for download_id, download_dict in downloads_data.items():
-                # Convert ISO datetime string back to datetime
-                download_dict["date_added"] = datetime.fromisoformat(download_dict["date_added"])
+                try:
+                    # Convert ISO datetime string back to datetime
+                    if isinstance(download_dict.get("date_added"), str):
+                        download_dict["date_added"] = datetime.fromisoformat(
+                            download_dict["date_added"]
+                        )
+                    else:
+                        # Skip entries with invalid date format
+                        print(f"Skipping download with invalid date: {download_id}")
+                        continue
 
-                # Convert scheduled_time if it exists
-                if download_dict.get("schedule") and download_dict["schedule"].get(
-                    "scheduled_time"
-                ):
-                    download_dict["schedule"]["scheduled_time"] = datetime.fromisoformat(
-                        download_dict["schedule"]["scheduled_time"]
-                    )
+                    # Convert scheduled_time if it exists
+                    if download_dict.get("schedule") and download_dict["schedule"].get(
+                        "scheduled_time"
+                    ):
+                        if isinstance(download_dict["schedule"]["scheduled_time"], str):
+                            download_dict["schedule"]["scheduled_time"] = datetime.fromisoformat(
+                                download_dict["schedule"]["scheduled_time"]
+                            )
+                        else:
+                            # Invalid schedule time format
+                            download_dict["schedule"]["scheduled_time"] = None
 
-                # Create DownloadItem from dict
-                download = DownloadItem(**download_dict)
-                self.downloads[download_id] = download
+                    # Check for duplicate URLs
+                    url = str(download_dict.get("url", "")).strip()
+                    if url:
+                        if url in duplicate_urls:
+                            # Found a duplicate URL, keep the newest one or completed one
+                            existing_id = duplicate_urls[url]
+                            existing_dict = valid_downloads.get(existing_id)
+
+                            # Keep the completed one if any, otherwise the newer one
+                            if existing_dict.get("status") == "completed":
+                                # Keep existing, ignore this one
+                                print(
+                                    f"Skipping duplicate download for URL: {url}, keeping completed one"
+                                )
+                                continue
+                            elif download_dict.get("status") == "completed":
+                                # Remove existing, keep this one
+                                print(
+                                    f"Replacing duplicate download for URL: {url} with completed one"
+                                )
+                                valid_downloads.pop(existing_id, None)
+                                valid_downloads[download_id] = download_dict
+                                duplicate_urls[url] = download_id
+                            else:
+                                # Compare dates and keep newer one
+                                if download_dict["date_added"] > existing_dict["date_added"]:
+                                    print(
+                                        f"Replacing duplicate download for URL: {url} with newer one"
+                                    )
+                                    valid_downloads.pop(existing_id, None)
+                                    valid_downloads[download_id] = download_dict
+                                    duplicate_urls[url] = download_id
+                                else:
+                                    # Keep existing, ignore this one
+                                    print(
+                                        f"Skipping duplicate download for URL: {url}, keeping newer one"
+                                    )
+                                    continue
+                        else:
+                            # First time seeing this URL
+                            valid_downloads[download_id] = download_dict
+                            duplicate_urls[url] = download_id
+                    else:
+                        # No URL, but still a valid entry
+                        valid_downloads[download_id] = download_dict
+
+                except Exception as e:
+                    print(f"Error validating download entry {download_id}: {e}")
+                    continue
+
+            # Now create objects only from valid entries
+            self.downloads = {}
+            for download_id, download_dict in valid_downloads.items():
+                try:
+                    # Create DownloadItem from dict
+                    download = DownloadItem(**download_dict)
+                    self.downloads[download_id] = download
+                except Exception as e:
+                    print(f"Error creating download object {download_id}: {e}")
+
+            # If we filtered out any downloads, save the cleaned up version
+            if len(downloads_data) != len(self.downloads):
+                print(
+                    f"Cleaned up downloads: removed {len(downloads_data) - len(self.downloads)} corrupt/duplicate entries"
+                )
+                await self.save_downloads()
 
             return True
         except Exception as e:
@@ -984,10 +1104,14 @@ class DownloadManager:
 
         # Check for existing downloads with the same URL to avoid duplicates
         normalized_url = str(request.url).strip()
-        for existing_id, existing_download in self.downloads.items():
-            if str(existing_download.url).strip() == normalized_url:
+        existing_download = None
+        for existing_id, download in self.downloads.items():
+            if str(download.url).strip() == normalized_url:
+                # Found a matching URL - potential duplicate
+                existing_download = download
+
                 # If there's an active or completed download with this URL
-                if existing_download.status in [
+                if download.status in [
                     DownloadStatus.DOWNLOADING,
                     DownloadStatus.QUEUED,
                     DownloadStatus.COMPLETED,
@@ -995,10 +1119,28 @@ class DownloadManager:
                 ]:
                     print(f"Download already exists for URL: {normalized_url}, ID: {existing_id}")
                     # Return the existing download instead of creating a new one
-                    return existing_download
+                    return download
 
-        # Generate a unique ID for the download
-        download_id = str(uuid.uuid4())
+                # If download is failed, we'll replace it with a new one
+                elif download.status == DownloadStatus.FAILED:
+                    print(f"Replacing failed download for URL: {normalized_url}, ID: {existing_id}")
+                    # Cancel any existing task if it's still active but failed
+                    if existing_id in self.tasks and not self.tasks[existing_id].done():
+                        try:
+                            self.tasks[existing_id].cancel()
+                            # Give it a moment to clean up
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            print(f"Error cancelling existing task: {e}")
+
+                    # We'll continue with the add process but will replace this download
+                    break
+
+        # Generate a unique ID for the download (or reuse existing ID if replacing a failed download)
+        if existing_download and existing_download.status == DownloadStatus.FAILED:
+            download_id = existing_download.id
+        else:
+            download_id = str(uuid.uuid4())
 
         # Set the save directory based on category or a default location
         category = request.category
@@ -1651,7 +1793,28 @@ class DownloadManager:
         if download.max_speed:
             cmd.extend(["--limit-rate", f"{download.max_speed}"])
 
-        if download.youtube_type == YoutubeDownloadType.AUDIO:
+        # Add options for better progress reporting
+        # Use a simpler progress template that works better with all yt-dlp versions
+        cmd.extend(["--newline", "--progress"])
+
+        # Verbose mode for more detailed output
+        cmd.append("-v")
+
+        # Add format options based on YouTube type
+        if download.youtube_type == YoutubeDownloadType.VIDEO:
+            # Download video with highest quality
+            cmd.extend(
+                [
+                    "-f",
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    "-o",
+                    output_path,
+                    "--no-mtime",
+                    "--newline",
+                    str(download.url),
+                ]
+            )
+        elif download.youtube_type == YoutubeDownloadType.AUDIO:
             # Extract audio only
             cmd.extend(
                 [
@@ -1662,19 +1825,6 @@ class DownloadManager:
                     "mp3",
                     "--audio-quality",
                     "0",  # 0 is best
-                    "-o",
-                    output_path,
-                    "--no-mtime",
-                    "--newline",
-                    str(download.url),
-                ]
-            )
-        else:
-            # Download video (default)
-            cmd.extend(
-                [
-                    "-f",
-                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                     "-o",
                     output_path,
                     "--no-mtime",
@@ -1772,11 +1922,26 @@ class DownloadManager:
                     # Parse progress information
                     self._parse_youtube_progress_line(download, line)
 
-                    # Update download state periodically
-                    await self._broadcast_download_update(download_id)
+                    # Log progress occasionally for debugging
+                    if "[download]" in line and "%" in line:
+                        print(f"YouTube download progress: {line}")
+                        if download.speed:
+                            print(f"  Speed detected: {download.speed} bytes/s")
 
-                except Exception:
+                    # Update download state periodically - for YouTube downloads we update more frequently
+                    # to show real-time speed information
+                    current_time = time.time()
+                    if (
+                        not hasattr(download, "_last_broadcast_time")
+                        or current_time - getattr(download, "_last_broadcast_time", 0) >= 0.5
+                    ):
+                        # Update at most twice per second
+                        await self._broadcast_download_update(download_id)
+                        download._last_broadcast_time = current_time
+
+                except Exception as e:
                     # Timeout or other errors, continue
+                    print(f"Error processing YouTube output: {e}")
                     await asyncio.sleep(0.1)
 
             # Handle results
@@ -1827,6 +1992,9 @@ class DownloadManager:
                     "success",
                 )
 
+                # Save immediately to ensure completed state is recorded
+                await self.save_downloads()
+
                 # Recalculate bandwidth allocation now that this download is complete
                 await self._recalculate_bandwidth_allocation()
             elif is_cancelled:
@@ -1834,14 +2002,29 @@ class DownloadManager:
                 download.status = DownloadStatus.FAILED
                 await self._broadcast_download_update(download_id)
 
+                # Save immediately to ensure failed state is recorded
+                await self.save_downloads()
+
                 # Recalculate bandwidth allocation now that this download is cancelled
                 await self._recalculate_bandwidth_allocation()
             else:
                 print(
                     f"Download failed: {download.name} - Return code: {return_code}, Error: {error_message}"
                 )
+
+                # Clear any ongoing tasks for this download
+                if download_id in self.tasks:
+                    try:
+                        if not self.tasks[download_id].done():
+                            self.tasks[download_id].cancel()
+                    except Exception as e:
+                        print(f"Error canceling task for failed download: {e}")
+
                 download.status = DownloadStatus.FAILED
                 await self._broadcast_download_update(download_id)
+
+                # Save immediately to ensure failed state is recorded
+                await self.save_downloads()
 
                 # Check if this was a scheduled download that should be retried
                 if (
@@ -2171,6 +2354,32 @@ class DownloadManager:
     def _parse_youtube_progress_line(self, download, line):
         """Parse a progress line from yt-dlp"""
         try:
+            # Check for our custom template format (bytes|speed|eta)
+            if "|" in line and line.count("|") == 2 and "/" in line and line.count("/") == 1:
+                try:
+                    # Format should be: downloaded_bytes/total_bytes|speed|eta
+                    size_part, speed_part, eta_part = line.split("|")
+                    downloaded, total = size_part.split("/")
+
+                    # Parse size values, handling 'NA' values
+                    if downloaded.strip() and downloaded.strip().upper() != "NA":
+                        download.size_downloaded = int(downloaded)
+
+                    if total.strip() and total.strip().upper() != "NA":
+                        download.size = int(total)
+
+                    # Parse speed (should be in bytes/s), handling 'NA' values
+                    if speed_part.strip() and speed_part.strip().upper() != "NA":
+                        download.speed = int(float(speed_part))
+
+                    # Parse ETA (should be in seconds), handling 'NA' values
+                    if eta_part.strip() and eta_part.strip().upper() != "NA":
+                        download.time_left = int(float(eta_part))
+
+                    return download
+                except (ValueError, IndexError) as e:
+                    print(f"Error parsing custom progress template: {e}")
+
             if "[download]" in line:
                 # Handle regular progress lines like:
                 # [download]  17.9% of 48.59MiB at 957.45KiB/s ETA 00:43
@@ -2187,14 +2396,35 @@ class DownloadManager:
                                     download.size * (progress_percent / 100)
                                 )
 
-                        # Extract download speed
-                        speed_index = -3 if "ETA" in line else -1
-                        speed_str = parts[speed_index]
-                        if speed_str and any(
-                            unit in speed_str.upper() for unit in ["KIB/S", "MIB/S", "B/S", "GIB/S"]
-                        ):
-                            speed = self._parse_speed(speed_str)
-                            download.speed = speed
+                        # Extract download speed using the keyword "at" which precedes speed in yt-dlp output
+                        at_index = -1
+                        if "at" in parts:
+                            try:
+                                at_index = parts.index("at")
+                                if at_index + 1 < len(parts):
+                                    speed_str = parts[at_index + 1]
+                                    if any(
+                                        unit in speed_str.upper()
+                                        for unit in ["KIB/S", "MIB/S", "B/S", "GIB/S"]
+                                    ):
+                                        speed = self._parse_speed(speed_str)
+                                        if speed > 0:
+                                            download.speed = speed
+                            except ValueError:
+                                pass
+
+                        # Fallback to the old method if "at" pattern not found
+                        if at_index == -1 and len(parts) > 3:
+                            # Look for speed near the end of the line
+                            for i in range(len(parts) - 1, max(0, len(parts) - 5), -1):
+                                if i >= 0 and any(
+                                    unit in parts[i].upper()
+                                    for unit in ["KIB/S", "MIB/S", "B/S", "GIB/S"]
+                                ):
+                                    speed = self._parse_speed(parts[i])
+                                    if speed > 0:
+                                        download.speed = speed
+                                    break
 
                         # Extract ETA
                         if "ETA" in line:
@@ -2203,6 +2433,14 @@ class DownloadManager:
                                 eta = parts[eta_index]
                                 seconds = self._parse_eta(eta)
                                 download.time_left = seconds
+
+                        # If we got speed data but not size, try to estimate size based on progress
+                        if download.speed > 0 and download.time_left and download.size is None:
+                            # Estimate total size = current downloaded + (speed * time left)
+                            estimated_remaining = download.speed * download.time_left
+                            if progress_percent > 0:
+                                estimated_total = download.size_downloaded + estimated_remaining
+                                download.size = estimated_total
 
                         # Save progress more frequently for large files or when progress changes significantly
                         if download.size and download.size > 0:
@@ -2606,6 +2844,10 @@ class DownloadManager:
     def _parse_speed(self, speed_str: str) -> int:
         """Parse speed string (like '1.2MiB/s') and convert to bytes per second"""
         try:
+            # Handle NA or empty values
+            if not speed_str or speed_str.strip().upper() == "NA":
+                return 0
+
             # Remove the '/s' part
             if "/s" in speed_str:
                 speed_str = speed_str.split("/s")[0]
