@@ -394,6 +394,8 @@ def run_api_server():
 def shutdown_scheduler():
     """Shutdown the scheduler service properly."""
     print("Shutting down scheduler...")
+    success = False
+
     try:
         # Try to send a clean shutdown request to the scheduler API endpoint
         response = requests.post(
@@ -401,19 +403,38 @@ def shutdown_scheduler():
         )
         if response.status_code == 200:
             print("Scheduler shutdown successful")
+            success = True
         else:
             print(f"Scheduler shutdown returned status code: {response.status_code}")
     except Exception as e:
         print(f"Error shutting down scheduler: {e}")
 
-        # Try a secondary approach if the first one fails
+    # Try a secondary approach if the first one fails
+    if not success:
         try:
             print("Attempting alternative scheduler shutdown...")
-            requests.post("http://localhost:8000/api/scheduler/shutdown", timeout=3)
+            try:
+                response = requests.post("http://localhost:8000/api/scheduler/shutdown", timeout=3)
+                if response.status_code == 200:
+                    print("Alternative scheduler shutdown successful")
+                    success = True
+            except:
+                pass
+
+            # Final attempt - terminate process
+            if not success:
+                print("Using final shutdown method - API server termination")
+                # Shutdown API server will also handle scheduler
+                try:
+                    shutdown_api_server()
+                    success = True
+                except:
+                    pass
         except Exception as inner_e:
             print(f"Alternative scheduler shutdown also failed: {inner_e}")
 
     print("Scheduler shutdown complete")
+    return success
 
 
 def shutdown_api_server():

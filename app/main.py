@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -130,18 +131,43 @@ async def shutdown_server(background_tasks: BackgroundTasks):
     async def shutdown_app():
         # First shutdown scheduler to ensure scheduled downloads are saved
         try:
+            # Explicitly set the shutdown flag before calling shutdown
+            download_manager._scheduler_shutdown = True
+
+            # Cancel any running scheduler task
+            if download_manager.scheduler_task:
+                download_manager.scheduler_task.cancel()
+
+            # Call the scheduler shutdown
             await download_manager.shutdown_scheduler()
+
+            # Ensure the scheduler task is completely done
+            await asyncio.sleep(1)
+
+            # Double-check and force termination if needed
+            if download_manager.scheduler_task and not download_manager.scheduler_task.done():
+                try:
+                    download_manager.scheduler_task.cancel()
+                    await asyncio.wait_for(
+                        asyncio.shield(download_manager.scheduler_task), timeout=2.0
+                    )
+                except (TimeoutError, asyncio.CancelledError):
+                    pass
         except Exception as e:
             print(f"Error during scheduler shutdown: {e}")
 
         # Save the download state
-        await download_manager.save_downloads()
-        print("Download state saved successfully")
+        try:
+            await download_manager.save_downloads()
+            print("Download state saved successfully")
+        except Exception as e:
+            print(f"Error saving download state: {e}")
 
         # Wait a bit to allow this response to be sent
-        import asyncio
-
-        await asyncio.sleep(1)
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
 
         # Exit the process
         print("Server shutting down now...")

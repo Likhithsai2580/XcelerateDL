@@ -912,6 +912,10 @@ function createDownloadContextMenu(downloadId, x, y) {
 
 // Show custom delete confirmation dialog
 function showDeleteConfirmation(downloadId, withFile = false) {
+    // Get download info to display filename
+    const download = downloads[downloadId];
+    if (!download) return;
+
     // Create dialog elements
     const dialog = document.createElement('div');
     dialog.className = 'delete-dialog';
@@ -923,16 +927,21 @@ function showDeleteConfirmation(downloadId, withFile = false) {
                 <h3>Confirm Delete</h3>
             </div>
             <div class="delete-dialog-body">
-                <p>${withFile ? 
+                <p><strong>${withFile ? 
                     'Are you sure you want to delete this download AND the associated file?' : 
-                    'Are you sure you want to delete this download?'}</p>
+                    'Are you sure you want to delete this download?'}</strong></p>
+                <p>File: <span class="filename">${download.filename}</span></p>
                 <p class="text-dim">${withFile ? 
                     'This action will permanently remove the downloaded file from your system.' : 
                     'The downloaded file will remain on your system.'}</p>
             </div>
             <div class="delete-dialog-footer">
-                <button class="delete-dialog-btn delete-dialog-btn-cancel">Cancel</button>
-                <button class="delete-dialog-btn delete-dialog-btn-delete">Delete</button>
+                <button class="delete-dialog-btn delete-dialog-btn-cancel">
+                    <i class="fa-solid fa-times"></i>Cancel
+                </button>
+                <button class="delete-dialog-btn delete-dialog-btn-delete">
+                    <i class="fa-solid fa-trash"></i>Delete
+                </button>
             </div>
         </div>
     `;
@@ -944,11 +953,30 @@ function showDeleteConfirmation(downloadId, withFile = false) {
     const cancelBtn = dialog.querySelector('.delete-dialog-btn-cancel');
     const deleteBtn = dialog.querySelector('.delete-dialog-btn-delete');
     
+    // Add click outside to close
+    dialog.addEventListener('click', (e) => {
+        if (e.target === dialog) {
+            dialog.remove();
+        }
+    });
+    
+    // Add escape key to close
+    document.addEventListener('keydown', function escapeHandler(e) {
+        if (e.key === 'Escape') {
+            dialog.remove();
+            document.removeEventListener('keydown', escapeHandler);
+        }
+    });
+    
     cancelBtn.addEventListener('click', () => {
         dialog.remove();
     });
     
     deleteBtn.addEventListener('click', async () => {
+        // Show loading state
+        deleteBtn.disabled = true;
+        deleteBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>Deleting...';
+        
         try {
             const success = await eel.delete_download(downloadId, withFile)();
             if (success) {
@@ -965,150 +993,6 @@ function showDeleteConfirmation(downloadId, withFile = false) {
             dialog.remove();
         }
     });
-}
-
-// Handle context menu item clicks
-async function handleContextMenuAction(e) {
-    const action = this.getAttribute('data-action');
-    const downloadId = this.getAttribute('data-id');
-    
-    // Close the menu
-    const menu = this.closest('.context-menu');
-    if (menu) menu.remove();
-    
-    // Handle different actions
-    switch (action) {
-        case 'settings':
-            openDownloadSettings(downloadId);
-            break;
-            
-        case 'schedule':
-            openScheduleModal(downloadId);
-            break;
-            
-        case 'pause':
-            try {
-                const result = await eel.pause_download(downloadId)();
-                if (result.error) {
-                    showNotification(`Error: ${result.error}`, 'error');
-                } else {
-                    downloads[downloadId] = result;
-                    renderDownloads();
-                    showNotification('Download paused.', 'info');
-                }
-            } catch (error) {
-                console.error('Error pausing download:', error);
-                showNotification('Failed to pause download.', 'error');
-            }
-            break;
-            
-        case 'resume':
-            try {
-                const result = await eel.resume_download(downloadId)();
-                if (result.error) {
-                    showNotification(`Error: ${result.error}`, 'error');
-                } else {
-                    downloads[downloadId] = result;
-                    renderDownloads();
-                    showNotification('Download resumed.', 'info');
-                }
-            } catch (error) {
-                console.error('Error resuming download:', error);
-                showNotification('Failed to resume download.', 'error');
-            }
-            break;
-            
-        case 'open':
-            try {
-                const result = await eel.open_download(downloadId)();
-                if (!result.success) {
-                    showNotification(`Error: ${result.error || 'Failed to open file'}`, 'error');
-                }
-            } catch (error) {
-                console.error('Error opening file:', error);
-                showNotification('Failed to open file.', 'error');
-            }
-            break;
-            
-        case 'copy-url':
-            try {
-                const download = downloads[downloadId];
-                if (download && download.url) {
-                    const success = await copyToClipboard(download.url);
-                    if (success) {
-                        showNotification('URL copied to clipboard.', 'success');
-                    } else {
-                        showNotification('Failed to copy URL.', 'error');
-                    }
-                } else {
-                    showNotification('URL not available.', 'error');
-                }
-            } catch (error) {
-                console.error('Error copying URL:', error);
-                showNotification('Failed to copy URL.', 'error');
-            }
-            break;
-            
-        case 'open-location':
-            openFileLocation(downloadId);
-            break;
-            
-        case 'delete':
-            // Show custom confirmation dialog
-            showDeleteConfirmation(downloadId, false);
-            break;
-            
-        case 'delete-file':
-            // Show custom confirmation dialog with file
-            showDeleteConfirmation(downloadId, true);
-            break;
-    }
-}
-
-// Open download settings modal
-function openDownloadSettings(downloadId) {
-    const download = downloads[downloadId];
-    if (!download) return;
-    
-    // Populate the form
-    document.getElementById('settings-download-id').value = downloadId;
-    document.getElementById('settings-download-name').value = download.filename;
-    document.getElementById('settings-priority').value = download.priority || 2;
-    document.getElementById('settings-max-speed').value = download.max_speed || 0;
-    document.getElementById('settings-max-retries').value = download.max_retries || 3;
-    
-    // Show the modal
-    openModal('download-settings-modal');
-    
-    // Handle form submission
-    const form = document.getElementById('download-settings-form');
-    form.onsubmit = async function(e) {
-        e.preventDefault();
-        
-        // Get form values
-        const priority = parseInt(document.getElementById('settings-priority').value);
-        const maxSpeed = parseInt(document.getElementById('settings-max-speed').value);
-        const maxRetries = parseInt(document.getElementById('settings-max-retries').value);
-        
-        // Update notification settings
-        notificationSettings.notify_completion = document.getElementById('settings-notify-completion').checked;
-        notificationSettings.notify_failure = document.getElementById('settings-notify-failure').checked;
-        notificationSettings.notify_progress = document.getElementById('settings-notify-progress').checked;
-        
-        // Save notification settings
-        saveNotificationSettings();
-        
-        try {
-            // Call API to update download settings
-            await eel.update_download_settings(downloadId, priority, maxSpeed * 1024, maxRetries)();
-            showNotification('Download settings updated', 'success');
-            closeModal('download-settings-modal');
-            await updateDownloads(true);
-        } catch (error) {
-            console.error('Error updating download settings:', error);
-            showNotification('Failed to update download settings', 'error');
-        }
-    };
 }
 
 // Expose function to receive notifications from backend
@@ -1385,13 +1269,13 @@ async function updateDownloads(forceRefresh = false) {
         if (!newDownloads) {
             console.warn("Empty response from get_downloads");
             isRefreshing = false;
-            return;
+            throw new Error("Empty response from get_downloads");
         }
         
         if (newDownloads.error) {
             console.warn("Error occurred:", newDownloads.error);
             isRefreshing = false;
-            return;
+            throw new Error(newDownloads.error || "Failed to get downloads");
         }
         
         // Create a new object to store the updated downloads
@@ -1465,9 +1349,16 @@ async function updateDownloads(forceRefresh = false) {
         } else {
             updateDownloadProgress();
         }
+        
+        // Update status bar with latest data
+        updateStatusBar();
+        
+        return true;
     } catch (error) {
         console.error('Error fetching downloads:', error);
         // Don't clear the downloads object on error to maintain state
+        // Re-throw the error so it can be caught by callers
+        throw error;
     } finally {
         isRefreshing = false;
     }
@@ -1478,9 +1369,29 @@ function setupRefreshButton() {
     const refreshButton = document.getElementById('refresh-button');
     if (refreshButton) {
         refreshButton.addEventListener('click', async () => {
+            // Disable the button and show loading state
+            refreshButton.disabled = true;
+            refreshButton.classList.add('loading');
+            
+            // Add a spinner icon while refreshing
+            const originalContent = refreshButton.innerHTML;
+            refreshButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Refreshing...</span>';
+            
             showNotification('Refreshing downloads...', 'info');
-            await updateDownloads(true);
-            showNotification('Downloads refreshed', 'success');
+            
+            try {
+                // Attempt to update downloads with forced refresh
+                await updateDownloads(true);
+                showNotification('Downloads refreshed successfully', 'success');
+            } catch (error) {
+                console.error('Error refreshing downloads:', error);
+                showNotification('Failed to refresh downloads. Please try again.', 'error');
+            } finally {
+                // Re-enable button and restore original content
+                refreshButton.disabled = false;
+                refreshButton.classList.remove('loading');
+                refreshButton.innerHTML = originalContent;
+            }
         });
     }
 }
@@ -1962,7 +1873,74 @@ async function deleteSelectedDownloads() {
         return;
     }
     
-    if (confirm('Are you sure you want to delete the selected downloads?')) {
+    // Create a delete confirmation dialog for batch deletion
+    const dialog = document.createElement('div');
+    dialog.className = 'delete-dialog';
+    
+    const selectedCount = selectedDownloads.size;
+    const selectedFiles = [...selectedDownloads].map(id => downloads[id]?.filename || 'Unknown file').slice(0, 3);
+    const hasMore = selectedCount > 3;
+    
+    const filesList = selectedFiles.map(name => `<li>${name}</li>`).join('');
+    const moreText = hasMore ? `<li>...and ${selectedCount - 3} more</li>` : '';
+    
+    const dialogContent = `
+        <div class="delete-dialog-content">
+            <div class="delete-dialog-header">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                <h3>Confirm Delete</h3>
+            </div>
+            <div class="delete-dialog-body">
+                <p><strong>Are you sure you want to delete ${selectedCount} selected download${selectedCount > 1 ? 's' : ''}?</strong></p>
+                <p>Selected files:</p>
+                <ul class="file-list">
+                    ${filesList}
+                    ${moreText}
+                </ul>
+                <p class="text-dim">The downloaded files will remain on your system.</p>
+            </div>
+            <div class="delete-dialog-footer">
+                <button class="delete-dialog-btn delete-dialog-btn-cancel">
+                    <i class="fa-solid fa-times"></i>Cancel
+                </button>
+                <button class="delete-dialog-btn delete-dialog-btn-delete">
+                    <i class="fa-solid fa-trash"></i>Delete
+                </button>
+            </div>
+        </div>
+    `;
+    
+    dialog.innerHTML = dialogContent;
+    document.body.appendChild(dialog);
+    
+    // Add event listeners
+    const cancelBtn = dialog.querySelector('.delete-dialog-btn-cancel');
+    const deleteBtn = dialog.querySelector('.delete-dialog-btn-delete');
+    
+    // Add click outside to close
+    dialog.addEventListener('click', (e) => {
+        if (e.target === dialog) {
+            dialog.remove();
+        }
+    });
+    
+    // Add escape key to close
+    document.addEventListener('keydown', function escapeHandler(e) {
+        if (e.key === 'Escape') {
+            dialog.remove();
+            document.removeEventListener('keydown', escapeHandler);
+        }
+    });
+    
+    cancelBtn.addEventListener('click', () => {
+        dialog.remove();
+    });
+    
+    deleteBtn.addEventListener('click', async () => {
+        // Show loading state
+        deleteBtn.disabled = true;
+        deleteBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>Deleting...';
+        
         let successCount = 0;
         let failedCount = 0;
         const toDelete = [...selectedDownloads]; // Make a copy of the selected IDs
@@ -2003,7 +1981,10 @@ async function deleteSelectedDownloads() {
         
         // Refresh the downloads list
         await updateDownloads(true);
-    }
+        
+        // Close the dialog
+        dialog.remove();
+    });
 }
 
 function getSelectedDownloads() {

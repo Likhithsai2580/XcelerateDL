@@ -79,6 +79,7 @@ class DownloadManager:
         self.scheduler_check_interval = 60  # Default check interval in seconds
         self.scheduler_task = None
         self.scheduler_failed_downloads = {}  # track failed scheduled downloads for retry
+        self._scheduler_shutdown = False  # Flag to signal scheduler shutdown
 
         # Create the download directory if it doesn't exist
         os.makedirs(self.download_dir, exist_ok=True)
@@ -166,14 +167,23 @@ class DownloadManager:
         """Start the scheduler for scheduled downloads"""
 
         async def scheduler_task():
-            while True:
+            while not self._scheduler_shutdown:
                 try:
                     await asyncio.sleep(check_interval_seconds)
+
+                    # Check if shutdown flag is set before proceeding
+                    if self._scheduler_shutdown:
+                        print("Scheduler shutdown flag detected, stopping scheduler task")
+                        break
+
                     print(
                         f"Running scheduler check at {datetime.now().isoformat()} with interval {check_interval_seconds}s"
                     )
                     await self._process_scheduled_downloads()
                     await self._process_failed_scheduled_downloads()
+                except asyncio.CancelledError:
+                    print("Scheduler task cancelled")
+                    break
                 except Exception as e:
                     print(f"ERROR in scheduler task: {str(e)}")
                     # Don't let exceptions stop the scheduler - log and continue
@@ -182,7 +192,11 @@ class DownloadManager:
                     traceback.print_exc()
                     await asyncio.sleep(5)  # Wait a bit before trying again after error
 
+            print("Scheduler task exited cleanly")
+
         if self.scheduler_task is None or self.scheduler_task.done():
+            # Reset shutdown flag when starting a new scheduler
+            self._scheduler_shutdown = False
             self.scheduler_task = asyncio.create_task(scheduler_task())
             print(f"Scheduler task started with interval {check_interval_seconds}s")
 
@@ -2816,6 +2830,9 @@ class DownloadManager:
         # Cancel the scheduler task if it exists
         if self.scheduler_task:
             try:
+                # Set a flag to indicate scheduler is shutting down
+                self._scheduler_shutdown = True
+
                 # Cancel the task
                 self.scheduler_task.cancel()
 
@@ -2827,6 +2844,7 @@ class DownloadManager:
                 except asyncio.CancelledError:
                     print("Scheduler task cancelled successfully")
 
+                # Clear the scheduler task
                 self.scheduler_task = None
 
                 # Save any scheduled downloads state
