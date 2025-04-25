@@ -406,6 +406,19 @@ async def update_scheduler_settings(check_interval_seconds: int):
     return {"success": True, "check_interval_seconds": check_interval_seconds}
 
 
+@router.post("/scheduler/shutdown")
+async def shutdown_scheduler():
+    """
+    Gracefully shutdown the scheduler for scheduled downloads
+
+    Used during application shutdown to ensure scheduled downloads state is saved properly.
+    """
+    success = await download_manager.shutdown_scheduler()
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to shutdown scheduler")
+    return {"success": True, "message": "Scheduler shutdown successfully"}
+
+
 @router.post("/{download_id}/tags")
 async def update_download_tags(download_id: str, tags: list[str]):
     """Update the tags for a download"""

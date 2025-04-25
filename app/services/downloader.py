@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
@@ -27,6 +28,33 @@ from app.models.download import (
     YoutubeDownloadType,
 )
 from app.services.ws_manager import manager as ws_manager
+
+
+# Simple rate limiter for download speed control
+class RateLimiter:
+    def __init__(self, max_bytes_per_second=None):
+        self.max_bytes_per_second = max_bytes_per_second
+        self.last_check_time = time.time()
+        self.bytes_read_since_check = 0
+
+    def limit(self, chunk_size):
+        if not self.max_bytes_per_second:
+            return
+
+        self.bytes_read_since_check += chunk_size
+        current_time = time.time()
+        time_passed = current_time - self.last_check_time
+
+        if time_passed > 0:
+            rate = self.bytes_read_since_check / time_passed
+            if rate > self.max_bytes_per_second:
+                sleep_time = self.bytes_read_since_check / self.max_bytes_per_second - time_passed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+            # Reset counters
+            self.last_check_time = time.time()
+            self.bytes_read_since_check = 0
 
 
 class DownloadManager:
@@ -1157,6 +1185,14 @@ class DownloadManager:
                             last_update_time = datetime.now()
                             last_downloaded = download.size_downloaded
 
+                            # New variables for improved speed and progress tracking
+                            last_time = time.time()
+                            last_size = download.size_downloaded
+
+                            # Rate limiting setup
+                            rate_limit = download.max_speed if download.max_speed else None
+                            rate_limiter = RateLimiter(rate_limit) if rate_limit else None
+
                             # Create a pause event to handle pausing
                             pause_event = asyncio.Event()
                             pause_event.set()  # Not paused initially
@@ -1261,43 +1297,57 @@ class DownloadManager:
                                     download.size_downloaded += len(chunk)
                                     downloaded_since_update += len(chunk)
 
-                                    # Update download speed and time left every few chunks
-                                    if downloaded_since_update > 1048576:  # 1MB
-                                        now = datetime.now()
-                                        time_diff = (now - last_update_time).total_seconds()
-                                        if time_diff > 0:
-                                            # Calculate speed in bytes/sec
-                                            download.speed = int(
-                                                (download.size_downloaded - last_downloaded)
-                                                / time_diff
+                                    # Calculate speed and ETA
+                                    current_time = time.time()
+                                    time_diff = current_time - last_time
+                                    size_diff = download.size_downloaded - last_size
+
+                                    if time_diff >= 1.0:  # Update at most once per second
+                                        # Calculate download speed in bytes/s
+                                        download.speed = int(size_diff / time_diff)
+
+                                        # Calculate ETA
+                                        if download.size and download.speed > 0:
+                                            remaining_size = (
+                                                download.size - download.size_downloaded
+                                            )
+                                            download.time_left = int(
+                                                remaining_size / download.speed
                                             )
 
-                                            # Update the time left estimate
-                                            if (
-                                                download.size
-                                                and download.size > download.size_downloaded
-                                                and download.speed > 0
+                                        # Update progress percentage if size is known
+                                        if download.size:
+                                            # Calculate the progress value but use it to update size_downloaded
+                                            progress_percentage = min(
+                                                100,
+                                                (download.size_downloaded / download.size) * 100,
+                                            )
+                                            # No need to set progress directly as it's a read-only property
+
+                                        # Broadcast the update
+                                        self._broadcast_download_update_sync(download_id)
+
+                                        # Save progress more frequently for large files
+                                        if (
+                                            download.size and download.size > 10 * 1024 * 1024
+                                        ):  # > 10MB
+                                            # Save every 5% for large files
+                                            current_progress = download.progress  # Use the property
+                                            if current_progress % 5 < (
+                                                100 * size_diff / download.size
                                             ):
-                                                download.time_left = int(
-                                                    (download.size - download.size_downloaded)
-                                                    / download.speed
-                                                )
-                                            else:
-                                                download.time_left = None
+                                                asyncio.create_task(self.save_downloads())
+                                        else:
+                                            # For smaller files, save less frequently
+                                            current_progress = download.progress  # Use the property
+                                            if current_progress % 10 < (
+                                                100 * size_diff / download.size
+                                            ):
+                                                asyncio.create_task(self.save_downloads())
 
-                                            # Reset counters
-                                            last_update_time = now
-                                            last_downloaded = download.size_downloaded
-                                            downloaded_since_update = 0
-
-                                            # Broadcast progress update
-                                            await self._broadcast_download_update(download_id)
-
-                                        # Periodically check if max_speed has changed
-                                        if rate_limit != download.max_speed:
-                                            rate_limit = (
-                                                download.max_speed if download.max_speed else None
-                                            )
+                                        # Update reference values for next iteration
+                                        last_time = current_time
+                                        last_size = download.size_downloaded
 
                             except asyncio.CancelledError:
                                 print(f"Download {download_id} was cancelled")
@@ -1365,6 +1415,14 @@ class DownloadManager:
                             download.time_left = None
                             download.pause_resume_callback = None
                             download.cancel_callback = None
+
+                            # Make sure size and progress are updated correctly
+                            if download.size:
+                                download.size_downloaded = download.size
+                                # Progress will be calculated automatically from size_downloaded / size
+
+                            # Explicitly save to file immediately when completed
+                            await self.save_downloads()
 
                             # Final progress update
                             await self.save_and_broadcast_download(download_id, "complete")
@@ -1911,15 +1969,8 @@ class DownloadManager:
         download.cancel_callback = None
 
     def _broadcast_download_update_sync(self, download_id: str):
-        """Synchronous version of broadcast update for use in thread callbacks"""
-        download = self.downloads.get(download_id)
-        if not download:
-            return
-
-        # Schedule the asynchronous broadcast in the event loop
-        asyncio.run_coroutine_threadsafe(
-            self._broadcast_download_update(download_id), asyncio.get_event_loop()
-        )
+        """Synchronous version of _broadcast_download_update for use in callbacks"""
+        asyncio.create_task(self._broadcast_download_update(download_id))
 
     def _find_yt_dlp_command(self) -> list[str]:
         """Find the yt-dlp command on the system, returns a list of command parts ready for subprocess"""
@@ -2033,20 +2084,23 @@ class DownloadManager:
         return download_dict
 
     async def _broadcast_download_update(self, download_id: str):
-        """Broadcast a download update to WebSocket clients"""
+        """Broadcast a download update to WebSocket clients and save downloads data"""
+        # Get the download
         download = self.downloads.get(download_id)
         if not download:
             return
 
-        try:
-            # Prepare download data for broadcast
-            download_dict = self._prepare_download_for_api(download)
+        # Convert to a serializable format
+        download_dict = self._prepare_download_for_api(download)
 
-            # Broadcast the update
-            await ws_manager.broadcast({"type": "download_update", "download": download_dict})
-        except Exception as e:
-            print(f"Error broadcasting download update: {str(e)}")
-            # Don't let errors in broadcasting break the download process
+        # Broadcast the update
+        await ws_manager.broadcast(
+            {"type": "download_update", "download": download_dict, "update_type": "update"}
+        )
+
+        # Save downloads data to file more frequently during active downloads
+        if download.status in [DownloadStatus.DOWNLOADING, DownloadStatus.PAUSED]:
+            await self.save_downloads()
 
     def get_downloads(
         self, category: FileCategory | None = None, status: DownloadStatus | None = None
@@ -2206,124 +2260,114 @@ class DownloadManager:
         return count
 
     def _parse_youtube_progress_line(self, download, line):
-        """Parse a yt-dlp progress line and update download object
-
-        Args:
-            download: DownloadItem object to update
-            line: Progress line to parse
-
-        Returns:
-            bool: True if successfully parsed, False otherwise
-        """
+        """Parse a progress line from yt-dlp"""
         try:
-            # First check if it's a progress line with percentage
-            if "%" in line and ("ETA" in line or "at" in line):
-                parts = line.split()
-
-                # Find the percentage value
-                percent_parts = [p for p in parts if p.endswith("%")]
-                if not percent_parts:
-                    return False
-
-                percent_str = percent_parts[0].rstrip("%")
-                try:
-                    percent = float(percent_str)
-                    # Update size_downloaded based on percentage instead of setting progress directly
-                    if download.size:
-                        download.size_downloaded = int(download.size * (percent / 100.0))
-                    else:
-                        # If size is unknown, try to parse it from the line
-                        size_parts = [
-                            p for i, p in enumerate(parts) if i > 0 and "of" in parts[i - 1]
-                        ]
-                        if size_parts:
-                            size_str = size_parts[0]
-                            if "~" in size_str:
-                                size_str = size_str.replace("~", "").strip()
-
-                            # Parse different size formats (MiB, KiB, etc.)
-                            if "MiB" in size_str:
-                                size_mb = float(size_str.replace("MiB", "").strip())
-                                download.size = int(size_mb * 1024 * 1024)
-                            elif "KiB" in size_str:
-                                size_kb = float(size_str.replace("KiB", "").strip())
-                                download.size = int(size_kb * 1024)
-                            elif "GiB" in size_str:
-                                size_gb = float(size_str.replace("GiB", "").strip())
-                                download.size = int(size_gb * 1024 * 1024 * 1024)
-                            else:
-                                # Try generic parsing
-                                download.size = int(float(size_str))
-
-                            # Calculate download size from percentage
-                            download.size_downloaded = int(download.size * (percent / 100.0))
-                except (ValueError, TypeError) as e:
-                    print(f"Error parsing percentage: {e}, value: {percent_str}")
-                    return False
-
-                # Parse speed if available
-                try:
-                    speed_index = [i for i, p in enumerate(parts) if "/s" in p]
-                    if speed_index:
-                        speed_str = parts[speed_index[0]]
-                        # Extract the numeric part and unit part
-                        # Handle formats like "68.60KiB/s", "1.45MiB/s", "68.60K/s", "1.45M/s"
-                        if "KiB/s" in speed_str or "K/s" in speed_str:
-                            speed_value = float(
-                                speed_str.replace("KiB/s", "").replace("K/s", "").strip()
-                            )
-                            download.speed = int(speed_value * 1024)
-                        elif "MiB/s" in speed_str or "M/s" in speed_str:
-                            speed_value = float(
-                                speed_str.replace("MiB/s", "").replace("M/s", "").strip()
-                            )
-                            download.speed = int(speed_value * 1024 * 1024)
-                        elif "GiB/s" in speed_str or "G/s" in speed_str:
-                            speed_value = float(
-                                speed_str.replace("GiB/s", "").replace("G/s", "").strip()
-                            )
-                            download.speed = int(speed_value * 1024 * 1024 * 1024)
-                        elif "B/s" in speed_str:
-                            speed_value = float(speed_str.replace("B/s", "").strip())
-                            download.speed = int(speed_value)
-                except (ValueError, TypeError, IndexError) as e:
-                    print(f"Error parsing speed: {e}, speed_str: {line}")
-
-                # Parse ETA if available
-                try:
-                    eta_index = [i for i, p in enumerate(parts) if p == "ETA"]
-                    if eta_index and eta_index[0] < len(parts) - 1:
-                        eta_str = parts[eta_index[0] + 1]
-                        if ":" in eta_str:
-                            # Parse HH:MM:SS or MM:SS format
-                            time_parts = eta_str.split(":")
-                            seconds = 0
-                            if len(time_parts) == 3:  # HH:MM:SS
-                                seconds = (
-                                    int(time_parts[0]) * 3600
-                                    + int(time_parts[1]) * 60
-                                    + int(time_parts[2])
+            if "[download]" in line:
+                # Handle regular progress lines like:
+                # [download]  17.9% of 48.59MiB at 957.45KiB/s ETA 00:43
+                if "%" in line:
+                    parts = line.split()
+                    try:
+                        # Extract progress percentage
+                        percent_str = next((p for p in parts if "%" in p), None)
+                        if percent_str:
+                            progress_percent = float(percent_str.replace("%", ""))
+                            # Update size_downloaded based on percentage instead of setting progress directly
+                            if download.size and download.size > 0:
+                                download.size_downloaded = int(
+                                    download.size * (progress_percent / 100)
                                 )
-                            elif len(time_parts) == 2:  # MM:SS
-                                seconds = int(time_parts[0]) * 60 + int(time_parts[1])
 
-                            download.time_left = seconds
-                except (ValueError, TypeError, IndexError) as e:
-                    print(f"Error parsing ETA: {e}")
+                        # Extract download speed
+                        speed_index = -3 if "ETA" in line else -1
+                        speed_str = parts[speed_index]
+                        if speed_str and any(
+                            unit in speed_str.upper() for unit in ["KIB/S", "MIB/S", "B/S", "GIB/S"]
+                        ):
+                            speed = self._parse_speed(speed_str)
+                            download.speed = speed
 
-                return True
+                        # Extract ETA
+                        if "ETA" in line:
+                            eta_index = parts.index("ETA") + 1
+                            if eta_index < len(parts):
+                                eta = parts[eta_index]
+                                seconds = self._parse_eta(eta)
+                                download.time_left = seconds
 
-            # Check if it's a destination line
-            elif "Destination:" in line:
-                filename = line.split("Destination:")[1].strip()
-                print(f"Detected output filename: {filename}")
-                return True
+                        # Save progress more frequently for large files or when progress changes significantly
+                        if download.size and download.size > 0:
+                            progress = download.progress  # Use the property
+                            if download.size > 10 * 1024 * 1024:  # 10MB threshold for "large" files
+                                # Save every 5% progress for large files
+                                if progress % 5 < 1:
+                                    asyncio.create_task(self.save_downloads())
+                            else:
+                                # Save every 10% progress for smaller files
+                                if progress % 10 < 1:
+                                    asyncio.create_task(self.save_downloads())
 
-            return False
+                    except (ValueError, IndexError) as e:
+                        # Skip lines that don't match expected format
+                        print(f"Error parsing progress: {e}")
+                        pass
+
+                # Handle specific size info lines like:
+                # [download] 100% of 48.59MiB in 00:13
+                elif "100%" in line and "of" in line and "in" in line:
+                    try:
+                        # Extract the file size part
+                        size_part = line.split("of")[1].split("in")[0].strip()
+                        size_bytes = self._parse_size(size_part)
+                        if size_bytes > 0:
+                            download.size = size_bytes
+                            download.size_downloaded = size_bytes
+                            # No need to set progress directly, it will be calculated from size_downloaded
+
+                        # Save the final state immediately
+                        asyncio.create_task(self.save_downloads())
+                    except (ValueError, IndexError):
+                        pass
+
+            # Handle destination lines to get the final filename
+            elif "[Merger] Merging" in line and "into" in line:
+                try:
+                    # Extract the final filename
+                    final_file = line.split("into")[1].strip().strip("\"'")
+                    if final_file:
+                        # Update the save path with the final filename
+                        save_dir = os.path.dirname(download.save_path)
+                        download.save_path = os.path.join(save_dir, os.path.basename(final_file))
+                except IndexError:
+                    pass
+
+            # Parse detected output filename lines
+            elif "Detected output filename:" in line:
+                try:
+                    filename = line.split(":", 1)[1].strip()
+                    if filename:
+                        print(f"Detected output filename: {filename}")
+                        # Update only if this is the final file (not a temporary audio/video component)
+                        filename_lower = filename.lower()
+                        if (
+                            download.youtube_type == YoutubeDownloadType.VIDEO
+                            and ".mp4" in filename_lower
+                        ) or (
+                            download.youtube_type == YoutubeDownloadType.AUDIO
+                            and ".mp3" in filename_lower
+                        ):
+                            download.save_path = filename
+                            download.name = os.path.basename(filename)
+                            # Save this info immediately
+                            asyncio.create_task(self.save_downloads())
+                except Exception as e:
+                    print(f"Error parsing output filename: {e}")
+
         except Exception as e:
-            print(f"Error parsing progress line: {e}")
-            print(f"Line was: {line}")
-            return False
+            # Log any other parsing errors
+            print(f"Error parsing yt-dlp output: {e}")
+
+        return download
 
     async def _send_notification(
         self, download_id: str, title: str, message: str, notification_type: str = "info"
@@ -2617,6 +2661,102 @@ class DownloadManager:
         print(f"Created recurring download {new_id} scheduled for {next_time.isoformat()}")
 
         return new_download
+
+    async def shutdown_scheduler(self):
+        """Gracefully shutdown the scheduler and save any pending tasks"""
+        print("Shutting down scheduler...")
+
+        # Cancel the scheduler task if it exists
+        if self.scheduler_task:
+            try:
+                # Cancel the task
+                self.scheduler_task.cancel()
+
+                # Wait for the task to be cancelled
+                try:
+                    await asyncio.wait_for(self.scheduler_task, timeout=2.0)
+                except TimeoutError:
+                    print("Scheduler task cancellation timed out")
+                except asyncio.CancelledError:
+                    print("Scheduler task cancelled successfully")
+
+                self.scheduler_task = None
+
+                # Save any scheduled downloads state
+                await self.save_downloads()
+
+                print("Scheduler shutdown complete")
+                return True
+            except Exception as e:
+                print(f"Error shutting down scheduler: {e}")
+                return False
+        else:
+            print("No active scheduler task to shutdown")
+            return True
+
+    def _parse_speed(self, speed_str: str) -> int:
+        """Parse speed string (like '1.2MiB/s') and convert to bytes per second"""
+        try:
+            # Remove the '/s' part
+            if "/s" in speed_str:
+                speed_str = speed_str.split("/s")[0]
+
+            # Extract the numeric part and unit
+            if speed_str.upper().endswith("KIB"):
+                value = float(speed_str[:-3])
+                return int(value * 1024)
+            elif speed_str.upper().endswith("MIB"):
+                value = float(speed_str[:-3])
+                return int(value * 1024 * 1024)
+            elif speed_str.upper().endswith("GIB"):
+                value = float(speed_str[:-3])
+                return int(value * 1024 * 1024 * 1024)
+            elif speed_str.upper().endswith("B"):
+                value = float(speed_str[:-1])
+                return int(value)
+            else:
+                # Try to parse as a plain number
+                return int(float(speed_str))
+        except (ValueError, IndexError):
+            return 0
+
+    def _parse_size(self, size_str: str) -> int:
+        """Parse size string (like '48.59MiB') and convert to bytes"""
+        try:
+            if size_str.upper().endswith("KIB"):
+                value = float(size_str[:-3])
+                return int(value * 1024)
+            elif size_str.upper().endswith("MIB"):
+                value = float(size_str[:-3])
+                return int(value * 1024 * 1024)
+            elif size_str.upper().endswith("GIB"):
+                value = float(size_str[:-3])
+                return int(value * 1024 * 1024 * 1024)
+            elif size_str.upper().endswith("B"):
+                value = float(size_str[:-1])
+                return int(value)
+            else:
+                # Try to parse as a plain number
+                return int(float(size_str))
+        except (ValueError, IndexError):
+            return 0
+
+    def _parse_eta(self, eta_str: str) -> int:
+        """Parse ETA string (like '01:30') and convert to seconds"""
+        try:
+            parts = eta_str.split(":")
+            if len(parts) == 2:
+                # MM:SS format
+                minutes, seconds = map(int, parts)
+                return minutes * 60 + seconds
+            elif len(parts) == 3:
+                # HH:MM:SS format
+                hours, minutes, seconds = map(int, parts)
+                return hours * 3600 + minutes * 60 + seconds
+            else:
+                return 0
+        except (ValueError, IndexError):
+            return 0
 
 
 # Singleton instance

@@ -27,6 +27,15 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    print("Starting application shutdown process...")
+
+    # Shutdown scheduler first
+    try:
+        await download_manager.shutdown_scheduler()
+    except Exception as e:
+        print(f"Error during scheduler shutdown in lifespan: {e}")
+
+    # Save download state
     await download_manager.save_downloads()
     print("Server shutting down, download state saved.")
 
@@ -119,13 +128,23 @@ async def shutdown_server(background_tasks: BackgroundTasks):
     """Shutdown the server gracefully"""
 
     async def shutdown_app():
+        # First shutdown scheduler to ensure scheduled downloads are saved
+        try:
+            await download_manager.shutdown_scheduler()
+        except Exception as e:
+            print(f"Error during scheduler shutdown: {e}")
+
         # Save the download state
         await download_manager.save_downloads()
+        print("Download state saved successfully")
+
         # Wait a bit to allow this response to be sent
         import asyncio
 
         await asyncio.sleep(1)
+
         # Exit the process
+        print("Server shutting down now...")
         os._exit(0)
 
     # Schedule the shutdown to happen after response is sent
