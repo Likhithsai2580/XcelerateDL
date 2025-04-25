@@ -1604,7 +1604,6 @@ class DownloadManager:
                 is_cancelled = True
                 download.status = DownloadStatus.FAILED
                 await self._broadcast_download_update(download_id)
-                # Recalculate bandwidth allocation
                 await self._recalculate_bandwidth_allocation()
                 return True
 
@@ -1624,24 +1623,31 @@ class DownloadManager:
                     paused_event.set()
                     download.status = DownloadStatus.DOWNLOADING
 
-                # Post to event loop to broadcast the update
-                asyncio.run_coroutine_threadsafe(
-                    self._broadcast_download_update(download_id), asyncio.get_event_loop()
-                )
-                # Recalculate bandwidth allocation
-                asyncio.run_coroutine_threadsafe(
-                    self._recalculate_bandwidth_allocation(), asyncio.get_event_loop()
-                )
+                await self._broadcast_download_update(download_id)
+                await self._recalculate_bandwidth_allocation()
                 return True
 
-        # Set up the callbacks
+        # Set callback functions in download object
         download.cancel_callback = cancel_callback
         download.pause_resume_callback = pause_callback
 
-        # Set up yt-dlp command
-        cmd = self._find_yt_dlp_command()
+        # Find yt-dlp
+        yt_dlp_cmd = self._find_yt_dlp_command()
+        if not yt_dlp_cmd:
+            download.status = DownloadStatus.FAILED
+            await self._send_notification(
+                download_id,
+                "Download Failed",
+                "yt-dlp command not found. Please install it using: pip install yt-dlp",
+                "error",
+            )
+            await self._broadcast_download_update(download_id)
+            return
 
-        # Apply bandwidth limit if necessary
+        # Prepare the yt-dlp command
+        cmd = yt_dlp_cmd.copy()
+
+        # Add rate limit if specified
         if download.max_speed:
             cmd.extend(["--limit-rate", f"{download.max_speed}"])
 
@@ -1727,6 +1733,7 @@ class DownloadManager:
             download_complete = False
             return_code = None
             error_message = None
+            success_message_found = False  # Track if we've seen a success message in the output
 
             while not download_complete and return_code is None and error_message is None:
                 # Check if cancelled
@@ -1754,6 +1761,14 @@ class DownloadManager:
                         error_message = line.split(":", 1)[1]
                         break
 
+                    # Check for success message in the output
+                    if (
+                        "has already been downloaded" in line
+                        or "Merging formats into" in line
+                        or "100%" in line
+                    ):
+                        success_message_found = True
+
                     # Parse progress information
                     self._parse_youtube_progress_line(download, line)
 
@@ -1765,7 +1780,12 @@ class DownloadManager:
                     await asyncio.sleep(0.1)
 
             # Handle results
-            if download_complete or (return_code is not None and return_code == 0):
+            if (
+                download_complete
+                or success_message_found
+                or (return_code is not None and return_code == 0)
+            ):
+                # If we found success indicators, consider the download successful even if return code isn't 0
                 if download.youtube_type == YoutubeDownloadType.AUDIO:
                     print(f"Audio extracted successfully: {download.name}")
                 else:
@@ -1780,8 +1800,23 @@ class DownloadManager:
                 if download.size is None:
                     # If we don't have the size but download is complete,
                     # set downloaded size as the size
-                    download.size = os.path.getsize(download.save_path)
-                    download.size_downloaded = download.size
+                    if os.path.exists(download.save_path):
+                        download.size = os.path.getsize(download.save_path)
+                    else:
+                        # Try to find the file if name has changed during download
+                        dir_path = os.path.dirname(download.save_path)
+                        possible_files = os.listdir(dir_path)
+                        if possible_files:
+                            # Get most recently created file in the directory
+                            last_file = max(
+                                [os.path.join(dir_path, f) for f in possible_files],
+                                key=os.path.getctime,
+                            )
+                            if os.path.isfile(last_file) and last_file.endswith((".mp4", ".mp3")):
+                                download.save_path = last_file
+                                download.size = os.path.getsize(last_file)
+
+                download.size_downloaded = download.size
 
                 # File is ready
                 await self._broadcast_download_update(download_id)
@@ -1841,132 +1876,6 @@ class DownloadManager:
                     )
 
                 await self._broadcast_download_update(download_id)
-
-                # Recalculate bandwidth allocation now that this download is failed
-                await self._recalculate_bandwidth_allocation()
-        else:
-            # For non-Windows platforms, use asyncio subprocess
-            process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-
-            # Variables for progress tracking
-            download_complete = False
-            actual_file_path = None
-            line_buffer = ""
-
-            # Main monitoring loop
-            while not is_cancelled:
-                # Check if we should pause
-                await paused_event.wait()
-
-                # Check if process has exited
-                if process.returncode is not None:
-                    if process.returncode == 0:
-                        download_complete = True
-                    break
-
-                # Read a chunk of output
-                chunk = await process.stdout.read(1024)
-                if not chunk:
-                    # No more output to read
-                    break
-
-                # Process the output
-                line_buffer += chunk.decode("utf-8", errors="replace")
-                lines = line_buffer.split("\n")
-                line_buffer = lines.pop()
-
-                # Parse each line
-                for line in lines:
-                    # Parse progress information
-                    self._parse_youtube_progress_line(download, line)
-
-                # Update UI
-                await self._broadcast_download_update(download_id)
-
-                # Short sleep to prevent CPU hammering
-                await asyncio.sleep(0.1)
-
-            # Handle completion or cancellation
-            if download_complete:
-                if download.youtube_type == YoutubeDownloadType.AUDIO:
-                    print(f"Audio extracted successfully: {download.name}")
-                else:
-                    print(f"Video downloaded successfully: {download.name}")
-
-                download.status = DownloadStatus.COMPLETED
-                download.speed = 0
-                download.time_left = None
-
-                # Ensure progress is 100%
-                if download.size is None:
-                    # If we don't have the size but download is complete,
-                    # set downloaded size as the size
-                    download.size = os.path.getsize(download.save_path)
-                    download.size_downloaded = download.size
-
-                # File is ready
-                await self._broadcast_download_update(download_id)
-                await self._send_notification(
-                    download_id,
-                    "Download Complete",
-                    f"'{download.name}' has been downloaded successfully.",
-                    "success",
-                )
-
-                # Recalculate bandwidth allocation
-                await self._recalculate_bandwidth_allocation()
-            else:
-                # Check if process was killed or exited with error
-                stderr_output = await process.stderr.read()
-                stderr_text = stderr_output.decode("utf-8", errors="replace")
-
-                print(f"Download failed or cancelled: {download.name}")
-                print(f"Error output: {stderr_text}")
-
-                download.status = DownloadStatus.FAILED
-
-                # Check if this was a scheduled download that should be retried
-                if (
-                    download.schedule
-                    and download.schedule.retry_on_failure
-                    and download.schedule.current_schedule_retries
-                    < download.schedule.max_schedule_retries
-                ):
-                    # Add to failed scheduled downloads for retry
-                    retry_time = datetime.now() + timedelta(
-                        minutes=download.schedule.retry_delay_minutes
-                    )
-                    self.scheduler_failed_downloads[download_id] = {
-                        "retry_time": retry_time,
-                        "attempts": download.schedule.current_schedule_retries,
-                    }
-
-                    # Send notification about retry
-                    await self._send_notification(
-                        download_id,
-                        "Scheduled Download Failed",
-                        f"The scheduled download '{download.name}' has failed. Retrying in {download.schedule.retry_delay_minutes} minutes.",
-                        "warning",
-                    )
-                else:
-                    # Send standard error notification
-                    await self._send_notification(
-                        download_id,
-                        "Download Failed",
-                        f"Failed to download '{download.name}': {stderr_text}",
-                        "error",
-                    )
-
-                await self._broadcast_download_update(download_id)
-
-                # Recalculate bandwidth allocation
-                await self._recalculate_bandwidth_allocation()
-
-        # Clean up
-        download.pause_resume_callback = None
-        download.cancel_callback = None
 
     def _broadcast_download_update_sync(self, download_id: str):
         """Synchronous version of _broadcast_download_update for use in callbacks"""
