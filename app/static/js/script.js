@@ -1394,38 +1394,30 @@ async function updateDownloads(forceRefresh = false) {
             return;
         }
         
-        // Check if downloads have changed
-        const downloadsChanged = JSON.stringify(Object.keys(downloads).sort()) !== 
-                               JSON.stringify(Object.keys(newDownloads).sort());
+        // Create a new object to store the updated downloads
+        let updatedDownloads = {};
         
-        // Check if any download properties have changed
-        let propertiesChanged = downloadsChanged;
-        if (!propertiesChanged) {
-            for (const id of Object.keys(downloads)) {
-                if (newDownloads[id] && (
-                    downloads[id].status !== newDownloads[id].status ||
-                    downloads[id].progress !== newDownloads[id].progress ||
-                    downloads[id].speed !== newDownloads[id].speed
-                )) {
-                    propertiesChanged = true;
-                    break;
-                }
-            }
+        // First process all new downloads from the API
+        for (const id of Object.keys(newDownloads)) {
+            // Add to the updated downloads object
+            updatedDownloads[id] = newDownloads[id];
         }
         
-        // Keep track of downloads that are in progress locally but missing from the API response
+        // Track any downloads that disappeared but were active
         for (const id of Object.keys(downloads)) {
+            // Skip if this download is already in the updated list
+            if (updatedDownloads[id]) continue;
+            
             // If a download is active (downloading/paused) but suddenly disappears from API, keep it in the UI with an error state
-            if (!newDownloads[id] && ['downloading', 'paused', 'queued'].includes(downloads[id].status)) {
+            if (['downloading', 'paused', 'queued'].includes(downloads[id].status)) {
                 console.warn(`Download ${id} disappeared while in ${downloads[id].status} state, preserving in UI as failed`);
-                newDownloads[id] = {
+                updatedDownloads[id] = {
                     ...downloads[id],
                     status: 'failed',
                     speed: 0,
                     time_left: 0,
                     error_message: 'Connection to download manager lost'
                 };
-                propertiesChanged = true;
                 
                 // Try to recover the download asynchronously if it was in downloading state
                 if (downloads[id].status === 'downloading') {
@@ -1446,11 +1438,29 @@ async function updateDownloads(forceRefresh = false) {
             }
         }
         
+        // Check if anything has changed that would require a re-render
+        let needsRerender = forceRefresh || 
+                          JSON.stringify(Object.keys(downloads).sort()) !== JSON.stringify(Object.keys(updatedDownloads).sort());
+        
+        // If structure hasn't changed, check if any properties have changed
+        if (!needsRerender) {
+            for (const id of Object.keys(updatedDownloads)) {
+                if (downloads[id] && (
+                    downloads[id].status !== updatedDownloads[id].status ||
+                    downloads[id].progress !== updatedDownloads[id].progress ||
+                    downloads[id].speed !== updatedDownloads[id].speed
+                )) {
+                    needsRerender = true;
+                    break;
+                }
+            }
+        }
+        
         // Update the global downloads object
-        downloads = newDownloads;
+        downloads = updatedDownloads;
         
         // Either do a full re-render or just update progress
-        if (downloadsChanged || propertiesChanged) {
+        if (needsRerender) {
             renderDownloads();
         } else {
             updateDownloadProgress();

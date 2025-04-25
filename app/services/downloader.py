@@ -954,6 +954,21 @@ class DownloadManager:
 
         print(f"Initial status for download: {initial_status.value}")
 
+        # Check for existing downloads with the same URL to avoid duplicates
+        normalized_url = str(request.url).strip()
+        for existing_id, existing_download in self.downloads.items():
+            if str(existing_download.url).strip() == normalized_url:
+                # If there's an active or completed download with this URL
+                if existing_download.status in [
+                    DownloadStatus.DOWNLOADING,
+                    DownloadStatus.QUEUED,
+                    DownloadStatus.COMPLETED,
+                    DownloadStatus.PAUSED,
+                ]:
+                    print(f"Download already exists for URL: {normalized_url}, ID: {existing_id}")
+                    # Return the existing download instead of creating a new one
+                    return existing_download
+
         # Generate a unique ID for the download
         download_id = str(uuid.uuid4())
 
