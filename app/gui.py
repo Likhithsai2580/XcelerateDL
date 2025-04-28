@@ -73,6 +73,28 @@ def add_download(download_data) -> dict:
             is_youtube = download_data.get("is_youtube", False)
             youtube_type = download_data.get("youtube_type")
 
+        if not url:
+            return {"error": "URL is required"}
+
+        # Import URL normalization function for consistency
+        from app.services.downloader import normalize_url
+
+        # Check for existing downloads with the same URL
+        normalized_url = normalize_url(url)
+        existing_downloads = get_downloads()
+        
+        if existing_downloads and not isinstance(existing_downloads, dict):
+            # Handle unexpected response format
+            print(f"Unexpected response from get_downloads: {existing_downloads}")
+        elif existing_downloads and "error" not in existing_downloads:
+            for download_id, download in existing_downloads.items():
+                download_url = download.get("url", "")
+                if normalize_url(download_url) == normalized_url:
+                    # Found a potential duplicate
+                    if download.get("status") in ["downloading", "queued", "completed", "paused", "scheduled"]:
+                        print(f"GUI: Download already exists for URL: {normalized_url}, ID: {download_id}")
+                        return download  # Return the existing download instead
+
         payload = {"url": url, "filename": filename, "save_path": save_path, "category": category}
 
         # Add YouTube-specific parameters if needed

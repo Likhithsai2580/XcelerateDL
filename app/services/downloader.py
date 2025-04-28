@@ -9,11 +9,13 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import UTC, datetime, timedelta
-from urllib.parse import urlparse
+from datetime import UTC, datetime, timedelta, timezone
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode, unquote
 
 import aiofiles
 import aiohttp
+import requests
+from pydantic import HttpUrl
 
 from app.models.download import (
     BandwidthAllocationMode,
@@ -576,8 +578,10 @@ class DownloadManager:
                             # Invalid schedule time format
                             download_dict["schedule"]["scheduled_time"] = None
 
-                    # Check for duplicate URLs
-                    url = str(download_dict.get("url", "")).strip()
+                    # Check for duplicate URLs - using improved normalization
+                    original_url = str(download_dict.get("url", "")).strip()
+                    url = normalize_url(original_url)
+                    
                     if url:
                         if url in duplicate_urls:
                             # Found a duplicate URL, keep the newest one or completed one
@@ -600,20 +604,33 @@ class DownloadManager:
                                 valid_downloads[download_id] = download_dict
                                 duplicate_urls[url] = download_id
                             else:
-                                # Compare dates and keep newer one
-                                if download_dict["date_added"] > existing_dict["date_added"]:
-                                    print(
-                                        f"Replacing duplicate download for URL: {url} with newer one"
-                                    )
+                                # If any of the downloads is actively downloading or queued, prefer that one
+                                active_statuses = ["downloading", "queued", "paused"]
+                                if existing_dict.get("status") in active_statuses and download_dict.get("status") not in active_statuses:
+                                    # Keep the active one
+                                    print(f"Skipping duplicate download for URL: {url}, keeping active one")
+                                    continue
+                                elif download_dict.get("status") in active_statuses and existing_dict.get("status") not in active_statuses:
+                                    # Keep this active one, remove the inactive one
+                                    print(f"Replacing inactive duplicate download for URL: {url} with active one")
                                     valid_downloads.pop(existing_id, None)
                                     valid_downloads[download_id] = download_dict
                                     duplicate_urls[url] = download_id
                                 else:
-                                    # Keep existing, ignore this one
-                                    print(
-                                        f"Skipping duplicate download for URL: {url}, keeping newer one"
-                                    )
-                                    continue
+                                    # Compare dates and keep newer one if both are in similar states
+                                    if download_dict["date_added"] > existing_dict["date_added"]:
+                                        print(
+                                            f"Replacing duplicate download for URL: {url} with newer one"
+                                        )
+                                        valid_downloads.pop(existing_id, None)
+                                        valid_downloads[download_id] = download_dict
+                                        duplicate_urls[url] = download_id
+                                    else:
+                                        # Keep existing, ignore this one
+                                        print(
+                                            f"Skipping duplicate download for URL: {url}, keeping newer one"
+                                        )
+                                        continue
                         else:
                             # First time seeing this URL
                             valid_downloads[download_id] = download_dict
@@ -1117,10 +1134,13 @@ class DownloadManager:
         print(f"Initial status for download: {initial_status.value}")
 
         # Check for existing downloads with the same URL to avoid duplicates
-        normalized_url = str(request.url).strip()
+        original_url = str(request.url).strip()
+        normalized_url = normalize_url(original_url)
         existing_download = None
+        
         for existing_id, download in self.downloads.items():
-            if str(download.url).strip() == normalized_url:
+            download_normalized_url = normalize_url(str(download.url))
+            if download_normalized_url == normalized_url:
                 # Found a matching URL - potential duplicate
                 existing_download = download
 
@@ -2240,13 +2260,61 @@ class DownloadManager:
 
     async def resume_download(self, download_id: str) -> DownloadItem | None:
         """Resume a paused download"""
-        download = self.get_download(download_id)
+        download = self.downloads.get(download_id)
         if not download:
-            return None
+            print(f"Download {download_id} not found, attempting recovery")
+            # Try to find a download with same URL in failed state (recovery attempt)
+            normalized_url = ""
+            for potential_id, potential_download in self.downloads.items():
+                if potential_download.status == DownloadStatus.FAILED and potential_id.startswith(download_id[:8]):
+                    # Found a potential match by ID prefix
+                    download = potential_download
+                    download_id = potential_id
+                    print(f"Found potential download by ID prefix: {potential_id}")
+                    break
+                    
+            if not download and normalized_url:
+                # Last resort: try to find by URL if we somehow have a URL but no download
+                for potential_id, potential_download in self.downloads.items():
+                    potential_url = normalize_url(str(potential_download.url))
+                    if potential_url == normalized_url:
+                        if potential_download.status == DownloadStatus.FAILED:
+                            # Found a failed download with same URL
+                            download = potential_download
+                            download_id = potential_id
+                            print(f"Found potential download by URL: {potential_id}")
+                            break
+                        elif potential_download.status != DownloadStatus.COMPLETED:
+                            # Found a non-completed download with same URL
+                            print(f"Cannot resume: URL is already being downloaded: {potential_id}")
+                            return potential_download  # Return existing download
 
-        # Allow resuming from failed or paused state
-        if download.status not in [DownloadStatus.PAUSED, DownloadStatus.FAILED]:
-            return None
+            if not download:
+                print(f"Download {download_id} recovery failed, not found")
+                return None
+
+        # Check if already downloading or completed
+        if download.status == DownloadStatus.DOWNLOADING:
+            print(f"Download {download_id} is already downloading")
+            return download
+        elif download.status == DownloadStatus.COMPLETED:
+            print(f"Download {download_id} is already completed")
+            return download
+        elif download.status == DownloadStatus.SCHEDULED:
+            print(f"Can't resume scheduled download, will start at its scheduled time")
+            return download
+
+        # Set status to QUEUED
+        download.status = DownloadStatus.QUEUED
+        
+        # If there's an existing task, cancel it before starting a new one
+        if download_id in self.tasks and not self.tasks[download_id].done():
+            print(f"Cancelling existing task for download {download_id}")
+            try:
+                self.tasks[download_id].cancel()
+                await asyncio.sleep(0.1)  # Give it a moment to clean up
+            except Exception as e:
+                print(f"Error cancelling existing task: {e}")
 
         # Start a new download task
         if download.is_youtube:
@@ -2254,9 +2322,9 @@ class DownloadManager:
         else:
             self.tasks[download_id] = asyncio.create_task(self._download_file(download_id))
 
-        # Update status
-        download.status = DownloadStatus.QUEUED
+        # Broadcast the update
         await self._broadcast_download_update(download_id)
+        
         return download
 
     async def delete_download(self, download_id: str, delete_file: bool = False) -> bool:
@@ -2930,3 +2998,52 @@ class DownloadManager:
 
 # Singleton instance
 download_manager = DownloadManager()
+
+def normalize_url(url: str) -> str:
+    """
+    Normalize a URL to allow for better duplicate detection.
+    Handles various edge cases like:
+    - http vs https
+    - www vs non-www
+    - Trailing slashes
+    - URL encoding differences
+    - Common query parameter ordering
+    """
+    if not url:
+        return ""
+    
+    try:
+        # Parse the URL
+        parsed = urlparse(url)
+        
+        # Normalize the netloc (domain) part - remove www if present
+        netloc = parsed.netloc
+        if netloc.startswith('www.'):
+            netloc = netloc[4:]
+        
+        # Normalize the path - ensure trailing slash consistency and decode URL encoding
+        path = unquote(parsed.path)
+        if path == '':
+            path = '/'
+        
+        # Sort query parameters for consistent ordering
+        if parsed.query:
+            query_params = parse_qs(parsed.query)
+            # Sort the query parameters by key
+            sorted_query = urlencode(sorted(query_params.items()), doseq=True)
+        else:
+            sorted_query = ''
+        
+        # Rebuild the URL with normalized components (using https)
+        # We intentionally ignore the scheme (http/https) for duplicate detection
+        normalized = urlunparse(('', netloc, path, parsed.params, sorted_query, ''))
+        
+        # Remove trailing slash from normalized URL if it's just a slash
+        if normalized.endswith('/') and normalized != '/':
+            normalized = normalized[:-1]
+            
+        return normalized
+    except Exception as e:
+        print(f"Error normalizing URL {url}: {e}")
+        # If normalization fails, return the original stripped URL
+        return url.strip()

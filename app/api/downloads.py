@@ -14,7 +14,7 @@ from app.models.download import (
     ScheduleSettings,
     SearchQuery,
 )
-from app.services.downloader import download_manager
+from app.services.downloader import download_manager, normalize_url
 
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 
@@ -22,85 +22,118 @@ router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 @router.post("", response_model=DownloadResponse)
 async def create_download(request: CreateDownloadRequest, background_tasks: BackgroundTasks):
     """Add a new download"""
-    download = await download_manager.add_download(request)
+    try:
+        # Check for empty URL
+        if not request.url:
+            raise HTTPException(status_code=400, detail="URL is required")
+        
+        # Normalize URL for checking duplicates
+        normalized_url = normalize_url(str(request.url))
+        
+        # Check for existing downloads with the same URL
+        for download_id, download in download_manager.downloads.items():
+            download_url = str(download.url)
+            download_normalized_url = normalize_url(download_url)
+            
+            if download_normalized_url == normalized_url:
+                # Found a potential duplicate
+                if download.status in [
+                    DownloadStatus.DOWNLOADING,
+                    DownloadStatus.QUEUED,
+                    DownloadStatus.COMPLETED,
+                    DownloadStatus.PAUSED,
+                    DownloadStatus.SCHEDULED,
+                ]:
+                    print(f"API: Download already exists for URL: {normalized_url}, ID: {download_id}")
+                    # Return the existing download
+                    download_dict = download_manager._prepare_download_for_api(download)
+                    return {"download": download_dict}
+        
+        # Proceed with adding the download
+        download = await download_manager.add_download(request)
 
-    # For YouTube downloads, use a background task to extract video info
-    if download.is_youtube:
-        # Always extract YouTube info immediately, even for scheduled downloads
-        # This ensures we have accurate metadata before the download starts
-        async def update_youtube_info(download_id: str, url: str):
-            try:
-                # Get video info in the background
-                title, size, description = await download_manager.get_youtube_info(str(url))
+        # For YouTube downloads, use a background task to extract video info
+        if download.is_youtube:
+            # Always extract YouTube info immediately, even for scheduled downloads
+            # This ensures we have accurate metadata before the download starts
+            async def update_youtube_info(download_id: str, url: str):
+                try:
+                    # Get video info in the background
+                    title, size, description = await download_manager.get_youtube_info(str(url))
+                
+                    # Update download info if we got a title
+                    if title:
+                        # Get the download again - it might have changed
+                        download = download_manager.get_download(download_id)
+                        if download:
+                            download.name = title
 
-                # Update download info if we got a title
-                if title:
-                    # Get the download again - it might have changed
-                    download = download_manager.get_download(download_id)
-                    if download:
-                        download.name = title
+                            # Update save path with proper name
+                            if (
+                                download.save_path
+                                and download.save_path.endswith(".mp4")
+                                or download.save_path.endswith(".mp3")
+                            ):
+                                import os
+                                import re
 
-                        # Update save path with proper name
-                        if (
-                            download.save_path
-                            and download.save_path.endswith(".mp4")
-                            or download.save_path.endswith(".mp3")
-                        ):
-                            import os
-                            import re
+                                # Sanitize filename for filesystem
+                                safe_title = re.sub(
+                                    r'[\\/*?:"<>|]', "", title
+                                )  # Remove illegal characters
+                                safe_title = re.sub(
+                                    r"\s+", " ", safe_title
+                                ).strip()  # Normalize whitespace
+                                safe_title = safe_title[:100]  # Truncate if too long
 
-                            # Sanitize filename for filesystem
-                            safe_title = re.sub(
-                                r'[\\/*?:"<>|]', "", title
-                            )  # Remove illegal characters
-                            safe_title = re.sub(
-                                r"\s+", " ", safe_title
-                            ).strip()  # Normalize whitespace
-                            safe_title = safe_title[:100]  # Truncate if too long
+                                extension = ".mp4"
+                                if download.youtube_type and download.youtube_type.value == "audio":
+                                    extension = ".mp3"
 
-                            extension = ".mp4"
-                            if download.youtube_type and download.youtube_type.value == "audio":
-                                extension = ".mp3"
-
-                            new_path = os.path.join(
-                                os.path.dirname(download.save_path), f"{safe_title}{extension}"
-                            )
-                            download.save_path = new_path
-
-                        # Update size if we have it
-                        if size:
-                            download.size = size
-
-                        # For scheduled downloads, add a description note with extracted info
-                        if download.status == DownloadStatus.SCHEDULED:
-                            # Store the description and any other metadata we want to preserve
-                            download.tags = list(set(download.tags + ["youtube", "scheduled"]))
-
-                            # Add metadata about when the download will start
-                            if download.schedule and download.schedule.scheduled_time:
-                                time_str = download.schedule.scheduled_time.strftime(
-                                    "%Y-%m-%d %H:%M:%S"
+                                new_path = os.path.join(
+                                    os.path.dirname(download.save_path), f"{safe_title}{extension}"
                                 )
-                                download.notes = f"YouTube video info extracted. Scheduled to start at {time_str}.\n\n{description or ''}"
-                            else:
-                                download.notes = (
-                                    f"YouTube video info extracted.\n\n{description or ''}"
-                                )
+                                download.save_path = new_path
 
-                        # Save the updated info
-                        await download_manager.save_downloads()
+                            # Update size if we have it
+                            if size:
+                                download.size = size
 
-                        # Broadcast the update to clients
-                        await download_manager._broadcast_download_update(download_id)
-            except Exception as e:
-                print(f"Error updating YouTube info in background: {e}")
+                            # For scheduled downloads, add a description note with extracted info
+                            if download.status == DownloadStatus.SCHEDULED:
+                                # Store the description and any other metadata we want to preserve
+                                download.tags = list(set(download.tags + ["youtube", "scheduled"]))
 
-        # Add the background task
-        background_tasks.add_task(update_youtube_info, download.id, str(download.url))
+                                # Add metadata about when the download will start
+                                if download.schedule and download.schedule.scheduled_time:
+                                    time_str = download.schedule.scheduled_time.strftime(
+                                        "%Y-%m-%d %H:%M:%S"
+                                    )
+                                    download.notes = f"YouTube video info extracted. Scheduled to start at {time_str}.\n\n{description or ''}"
+                                else:
+                                    download.notes = (
+                                        f"YouTube video info extracted.\n\n{description or ''}"
+                                    )
 
-    # Get a serializable version
-    download_dict = download_manager._prepare_download_for_api(download)
-    return {"download": download_dict}
+                            # Save the updated info
+                            await download_manager.save_downloads()
+
+                            # Broadcast the update to clients
+                            await download_manager._broadcast_download_update(download_id)
+                except Exception as e:
+                    print(f"Error updating YouTube info in background: {e}")
+
+            # Add the background task
+            background_tasks.add_task(update_youtube_info, download.id, str(download.url))
+
+        # Get a serializable version
+        download_dict = download_manager._prepare_download_for_api(download)
+        return {"download": download_dict}
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add download: {str(e)}")
 
 
 @router.get("", response_model=DownloadsListResponse)

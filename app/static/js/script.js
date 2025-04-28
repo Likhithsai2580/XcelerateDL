@@ -1249,6 +1249,55 @@ function hideLoadingOverlay() {
     }
 }
 
+// Utility function to normalize URLs for comparison
+function normalizeUrl(url) {
+    if (!url) return '';
+    
+    try {
+        // Create URL object
+        const urlObj = new URL(url);
+        
+        // Remove 'www.' from hostname if present
+        let hostname = urlObj.hostname;
+        if (hostname.startsWith('www.')) {
+            hostname = hostname.substring(4);
+        }
+        
+        // Normalize path - ensure trailing slash consistency
+        let path = urlObj.pathname;
+        if (path === '') {
+            path = '/';
+        } else if (path.endsWith('/') && path !== '/') {
+            path = path.slice(0, -1);
+        }
+        
+        // Get query parameters and sort them
+        const queryParams = {};
+        for (const [key, value] of urlObj.searchParams.entries()) {
+            if (!queryParams[key]) {
+                queryParams[key] = [];
+            }
+            queryParams[key].push(value);
+        }
+        
+        // Build normalized query string
+        const queryKeys = Object.keys(queryParams).sort();
+        const queryParts = [];
+        for (const key of queryKeys) {
+            for (const value of queryParams[key].sort()) {
+                queryParts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+            }
+        }
+        const normalizedQuery = queryParts.join('&');
+        
+        // Rebuild URL without protocol (scheme)
+        return `//${hostname}${path}${normalizedQuery ? '?' + normalizedQuery : ''}`;
+    } catch (e) {
+        console.error('Error normalizing URL:', e);
+        return url.trim();
+    }
+}
+
 // Update downloads list - with throttling to prevent UI freezing
 async function updateDownloads(forceRefresh = false) {
     const now = Date.now();
@@ -1281,10 +1330,36 @@ async function updateDownloads(forceRefresh = false) {
         // Create a new object to store the updated downloads
         let updatedDownloads = {};
         
-        // First process all new downloads from the API
+        // Create maps to track downloads by URL for duplicate detection
+        const downloadsByUrl = new Map();
+        
+        // First, process existing downloads in our current state
+        for (const id of Object.keys(downloads)) {
+            const download = downloads[id];
+            if (download.url) {
+                const normalizedUrl = normalizeUrl(download.url);
+                if (!downloadsByUrl.has(normalizedUrl)) {
+                    downloadsByUrl.set(normalizedUrl, []);
+                }
+                downloadsByUrl.get(normalizedUrl).push({id, download});
+            }
+        }
+        
+        // Process all new downloads from the API
         for (const id of Object.keys(newDownloads)) {
-            // Add to the updated downloads object
-            updatedDownloads[id] = newDownloads[id];
+            const newDownload = newDownloads[id];
+            
+            // Add to the normalized URL map
+            if (newDownload.url) {
+                const normalizedUrl = normalizeUrl(newDownload.url);
+                if (!downloadsByUrl.has(normalizedUrl)) {
+                    downloadsByUrl.set(normalizedUrl, []);
+                }
+                downloadsByUrl.get(normalizedUrl).push({id, download: newDownload, isNew: true});
+            }
+            
+            // Add to updated downloads
+            updatedDownloads[id] = newDownload;
         }
         
         // Track any downloads that disappeared but were active
@@ -1292,39 +1367,62 @@ async function updateDownloads(forceRefresh = false) {
             // Skip if this download is already in the updated list
             if (updatedDownloads[id]) continue;
             
-            // If a download is active (downloading/paused) but suddenly disappears from API, keep it in the UI with an error state
-            if (['downloading', 'paused', 'queued'].includes(downloads[id].status)) {
-                console.warn(`Download ${id} disappeared while in ${downloads[id].status} state, preserving in UI as failed`);
-                updatedDownloads[id] = {
-                    ...downloads[id],
-                    status: 'failed',
-                    speed: 0,
-                    time_left: 0,
-                    error_message: 'Connection to download manager lost'
-                };
+            const download = downloads[id];
+            
+            // If a download is active (downloading/paused) but disappeared, check if we found it with a different ID
+            if (['downloading', 'paused', 'queued'].includes(download.status)) {
+                let foundDuplicate = false;
                 
-                // Try to recover the download asynchronously if it was in downloading state
-                if (downloads[id].status === 'downloading') {
-                    console.log(`Attempting to recover download ${id}`);
-                    setTimeout(async () => {
-                        try {
-                            // Try to get specific download info or resume it
-                            const result = await eel.resume_download(id)();
-                            if (result && !result.error) {
-                                console.log(`Successfully recovered download ${id}`);
-                                await updateDownloads(true);
-                            }
-                        } catch (e) {
-                            console.error(`Failed to recover download ${id}:`, e);
+                // Check if we have this URL with a different ID in the new downloads
+                if (download.url) {
+                    const normalizedUrl = normalizeUrl(download.url);
+                    const urlDownloads = downloadsByUrl.get(normalizedUrl) || [];
+                    
+                    for (const {id: otherId, download: otherDownload, isNew} of urlDownloads) {
+                        // If this is a new download with the same URL
+                        if (isNew && id !== otherId) {
+                            console.log(`Found download ${otherId} with same URL as disappeared download ${id}`);
+                            foundDuplicate = true;
+                            // Don't add the disappeared download to updatedDownloads
+                            break;
                         }
-                    }, 2000); // Wait 2 seconds before attempting recovery
+                    }
+                }
+                
+                // If we didn't find a duplicate, preserve the download with an error state
+                if (!foundDuplicate) {
+                    console.warn(`Download ${id} disappeared while in ${download.status} state, preserving in UI as failed`);
+                    updatedDownloads[id] = {
+                        ...download,
+                        status: 'failed',
+                        speed: 0,
+                        time_left: 0,
+                        error_message: 'Connection to download manager lost'
+                    };
+                    
+                    // Try to recover the download asynchronously if it was in downloading state
+                    if (download.status === 'downloading') {
+                        console.log(`Attempting to recover download ${id}`);
+                        setTimeout(async () => {
+                            try {
+                                // Try to get specific download info or resume it
+                                const result = await eel.resume_download(id)();
+                                if (result && !result.error) {
+                                    console.log(`Successfully recovered download ${id}`);
+                                    await updateDownloads(true);
+                                }
+                            } catch (e) {
+                                console.error(`Failed to recover download ${id}:`, e);
+                            }
+                        }, 2000); // Wait 2 seconds before attempting recovery
+                    }
                 }
             }
         }
-        
+
         // Check if anything has changed that would require a re-render
         let needsRerender = forceRefresh || 
-                          JSON.stringify(Object.keys(downloads).sort()) !== JSON.stringify(Object.keys(updatedDownloads).sort());
+                           JSON.stringify(Object.keys(downloads).sort()) !== JSON.stringify(Object.keys(updatedDownloads).sort());
         
         // If structure hasn't changed, check if any properties have changed
         if (!needsRerender) {
@@ -1704,11 +1802,42 @@ function renderDownloads() {
     applyFilters();
 }
 
-// Function to detect YouTube URLs
+// Function to detect if a URL is a YouTube video
 function detectYouTubeUrl(url) {
     if (!url) return false;
-    const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.*$/i;
-    return youtubeRegex.test(url);
+    
+    try {
+        // Normalize the URL first
+        const normalizedUrl = normalizeUrl(url);
+        
+        // Check for various YouTube domain patterns
+        const youtubePatterns = [
+            '//youtube.com/watch',
+            '//youtube.com/shorts/',
+            '//youtube.com/v/',
+            '//youtube.com/embed/',
+            '//youtu.be/',
+            '//youtube.com/playlist',
+            '//music.youtube.com/watch',
+            '//gaming.youtube.com/watch'
+        ];
+        
+        // Check if normalized URL matches any YouTube patterns
+        for (const pattern of youtubePatterns) {
+            if (normalizedUrl.includes(pattern)) {
+                return true;
+            }
+        }
+        
+        return false;
+    } catch (e) {
+        console.error('Error detecting YouTube URL:', e);
+        
+        // Fallback to simpler detection if normalization fails
+        return url.includes('youtube.com/watch') || 
+               url.includes('youtu.be/') ||
+               url.includes('youtube.com/shorts/');
+    }
 }
 
 // Handle new download form submission
