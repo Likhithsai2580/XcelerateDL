@@ -430,13 +430,13 @@ function setupSchedulingOptions() {
                     // Add the new download to our list
                     downloads[result.id] = result;
                     renderDownloads();
-                    showNotification('Download added successfully!', 'success');
+                    showNotification(`Download added successfully!`, 'success');
                     closeModal('new-download-modal');
                     newDownloadForm.reset();
                 }
             } catch (error) {
                 console.error('Error adding download:', error);
-                showNotification('Failed to add download.', 'error');
+                showNotification(`Failed to add download.`, 'error');
             }
         };
     }
@@ -1224,6 +1224,9 @@ function attachEventHandlers() {
     
     // Set up toolbar buttons
     setupToolbarButtons();
+    
+    // Set up refresh button
+    setupRefreshButton();
 }
 
 // Show loading overlay
@@ -1467,6 +1470,11 @@ function setupRefreshButton() {
     const refreshButton = document.getElementById('refresh-button');
     if (refreshButton) {
         refreshButton.addEventListener('click', async () => {
+            // Prevent multiple clicks
+            if (refreshButton.disabled || refreshButton.classList.contains('loading')) {
+                return;
+            }
+            
             // Disable the button and show loading state
             refreshButton.disabled = true;
             refreshButton.classList.add('loading');
@@ -1475,15 +1483,17 @@ function setupRefreshButton() {
             const originalContent = refreshButton.innerHTML;
             refreshButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Refreshing...</span>';
             
-            showNotification('Refreshing downloads...', 'info');
+            // No initial notification to reduce popup count
             
             try {
                 // Attempt to update downloads with forced refresh
                 await updateDownloads(true);
-                showNotification('Downloads refreshed successfully', 'success');
+                
+                // Show just one notification when complete (and automatically clears previous ones)
+                showNotification('Downloads refreshed successfully', 'success', true);
             } catch (error) {
                 console.error('Error refreshing downloads:', error);
-                showNotification('Failed to refresh downloads. Please try again.', 'error');
+                showNotification('Failed to refresh downloads. Please try again.', 'error', true);
             } finally {
                 // Re-enable button and restore original content
                 refreshButton.disabled = false;
@@ -1493,409 +1503,6 @@ function setupRefreshButton() {
         });
     }
 }
-
-// Initialize event listeners once DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('DOM fully loaded');
-    
-    // Load downloads when the page loads
-    setupDownloadsRefresh();
-    
-    // Initialize sidebar menu
-    initializeSidebarMenu();
-    
-    // Set up refresh button
-    setupRefreshButton();
-    
-    // Attach all event handlers for buttons and checkboxes
-    attachEventHandlers();
-    
-    // Set up YouTube URL detection
-    const urlInput = document.getElementById('download-url');
-    const youtubeOptions = document.querySelector('.youtube-options');
-    const categorySelect = document.getElementById('download-category');
-    
-    urlInput?.addEventListener('input', function() {
-        const isYouTubeUrl = detectYouTubeUrl(this.value);
-        
-        // Show/hide YouTube options
-        if (youtubeOptions) {
-            youtubeOptions.style.display = isYouTubeUrl ? 'block' : 'none';
-        }
-        
-        // Auto-select YouTube category if it's a YouTube URL
-        if (isYouTubeUrl && categorySelect) {
-            categorySelect.value = 'youtube';
-        }
-    });
-    
-    // Category change handler
-    categorySelect?.addEventListener('change', function() {
-        if (youtubeOptions) {
-            youtubeOptions.style.display = this.value === 'youtube' ? 'block' : 'none';
-        }
-    });
-});
-
-// Update progress bars without re-rendering the entire list
-function updateDownloadProgress() {
-    for (const [id, download] of Object.entries(downloads)) {
-        const downloadItem = document.querySelector(`.download-item[data-id="${id}"]`);
-        if (!downloadItem) continue;
-        
-        const progress = download.progress || 0;
-        
-        // Update progress bar with smoother transition
-        const progressBar = downloadItem.querySelector('.progress-bar');
-        if (progressBar) {
-            // Only update progress if it's meaningful to avoid random fluctuations
-            const currentWidth = parseFloat(progressBar.style.width) || 0;
-            const difference = Math.abs(progress - currentWidth);
-            
-            // Only update if the change is significant (more than 0.5%) or for specific states
-            if (difference > 0.5 || download.status === 'completed' || download.status === 'failed') {
-                progressBar.style.width = `${progress}%`;
-            }
-            
-            // Update progress bar class based on status
-            progressBar.className = 'progress-bar';
-            if (download.status === 'downloading') progressBar.classList.add('progress-downloading');
-            else if (download.status === 'paused') progressBar.classList.add('progress-paused');
-            else if (download.status === 'completed') progressBar.classList.add('progress-completed');
-            else if (download.status === 'failed') progressBar.classList.add('progress-failed');
-        }
-        
-        // Update speed with improved formatting
-        const speedElement = downloadItem.querySelector('.item-speed');
-        if (speedElement && download.speed !== undefined) {
-            const speedFormatted = formatSpeed(download.speed);
-            // Only update if the speed has changed to avoid flickering
-            if (speedElement.innerHTML !== speedFormatted) {
-                speedElement.innerHTML = speedFormatted;
-            }
-        }
-        
-        // Update time left
-        const timeElement = downloadItem.querySelector('.item-time');
-        if (timeElement) {
-            timeElement.textContent = formatTimeLeft(download.time_left);
-        }
-        
-        // Update status
-        const statusElement = downloadItem.querySelector('.status-badge');
-        if (statusElement) {
-            statusElement.className = `status-badge ${download.status}`;
-            statusElement.querySelector('.status-text').textContent = download.status;
-        }
-        
-        // Update size downloaded
-        const sizeElement = downloadItem.querySelector('.item-size');
-        if (sizeElement) {
-            const totalSize = formatSize(download.size);
-            const downloadedSize = formatSize(download.downloaded || download.size_downloaded || 0);
-            sizeElement.textContent = `${downloadedSize} / ${totalSize}`;
-        }
-    }
-    
-    // Update status bar
-    updateStatusBar();
-}
-
-// Handle "Select All" checkbox
-function handleSelectAll(e) {
-    const isChecked = e.target.checked;
-    const checkboxes = document.querySelectorAll('.download-item input[type="checkbox"]');
-    
-    checkboxes.forEach(checkbox => {
-        checkbox.checked = isChecked;
-        const downloadId = checkbox.closest('.download-item').dataset.id;
-        
-        if (isChecked) {
-            selectedDownloads.add(downloadId);
-        } else {
-            selectedDownloads.delete(downloadId);
-        }
-    });
-    
-    // Update UI based on selection
-    updateSelectionUI();
-}
-
-// Handle individual checkbox changes
-function handleCheckboxChange(e) {
-    const checkbox = e.target;
-    const downloadId = checkbox.closest('.download-item').dataset.id;
-    
-    if (checkbox.checked) {
-        selectedDownloads.add(downloadId);
-    } else {
-        selectedDownloads.delete(downloadId);
-        // Uncheck "select all" if any item is unchecked
-        document.getElementById('select-all').checked = false;
-    }
-    
-    // Update UI based on selection
-    updateSelectionUI();
-}
-
-// Update UI based on selection state
-function updateSelectionUI() {
-    const hasSelection = selectedDownloads.size > 0;
-    
-    // Enable/disable action buttons based on selection
-    document.querySelectorAll('.toolbar-button[data-action]').forEach(button => {
-        const action = button.dataset.action;
-        if (['resume', 'pause', 'delete'].includes(action)) {
-            button.disabled = !hasSelection;
-            button.classList.toggle('disabled', !hasSelection);
-        }
-    });
-}
-
-// Render downloads in the UI
-function renderDownloads() {
-    const container = document.getElementById('downloads-container');
-    
-    // If container doesn't exist yet, exit early
-    if (!container) {
-        console.warn("Downloads container not found in DOM");
-        return;
-    }
-    
-    // Handle empty downloads list
-    if (!downloads || Object.keys(downloads).length === 0) {
-        container.innerHTML = `
-            <div class="empty-list-message">
-                <i class="fa-solid fa-cloud-arrow-down fa-3x"></i>
-                <p>Your download list is empty</p>
-                <button class="btn-primary start-downloading-btn">
-                    <i class="fa-solid fa-plus"></i> Add New Download
-                </button>
-            </div>
-        `;
-        
-        // Re-add event listeners
-        attachEventHandlers();
-        
-        // Update select-all checkbox
-        const selectAllCheckbox = document.getElementById('select-all');
-        if (selectAllCheckbox) {
-            selectAllCheckbox.checked = false;
-            selectAllCheckbox.disabled = true;
-        }
-        
-        // Clear selection and update UI
-        selectedDownloads.clear();
-        updateSelectionUI();
-        return;
-    }
-
-    // Enable the select-all checkbox when we have downloads
-    const selectAllCheckbox = document.getElementById('select-all');
-    if (selectAllCheckbox) {
-        selectAllCheckbox.disabled = false;
-    }
-
-    let html = '';
-    for (const [id, download] of Object.entries(downloads)) {
-        const isChecked = selectedDownloads.has(id) ? 'checked' : '';
-        const progress = download.progress || 0;
-        
-        // Colorize progress bar based on status
-        let progressBarClass = '';
-        if (download.status === 'downloading') progressBarClass = 'progress-downloading';
-        else if (download.status === 'paused') progressBarClass = 'progress-paused';
-        else if (download.status === 'completed') progressBarClass = 'progress-completed';
-        else if (download.status === 'failed') progressBarClass = 'progress-failed';
-        
-        // Handle optional file extension icon
-        const fileExtension = (download.filename || '').split('.').pop().toLowerCase();
-        const categoryIcon = getCategoryIconByExtension(fileExtension) || getCategoryIcon(download.category);
-        
-        // Create download items
-        const statusIcon = download.status === 'completed' ? 'fa-check-circle' :
-                          download.status === 'downloading' ? 'fa-circle-notch fa-spin' :
-                          download.status === 'paused' ? 'fa-pause-circle' :
-                          download.status === 'queued' ? 'fa-clock' :
-                          download.status === 'scheduled' ? 'fa-calendar-alt' :
-                          'fa-exclamation-circle';
-        
-        const statusClass = download.status === 'completed' ? 'status-completed' :
-                           download.status === 'downloading' ? 'status-downloading' :
-                           download.status === 'paused' ? 'status-paused' :
-                           download.status === 'queued' ? 'status-queued' :
-                           download.status === 'scheduled' ? 'status-scheduled' :
-                           'status-failed';
-        
-        const statusText = download.status === 'completed' ? 'Completed' :
-                          download.status === 'downloading' ? 'Downloading' :
-                          download.status === 'paused' ? 'Paused' :
-                          download.status === 'queued' ? 'Queued' :
-                          download.status === 'scheduled' ? 'Scheduled' :
-                          'Failed';
-                          
-        // Format scheduled time for display if applicable
-        let scheduleInfo = '';
-        if (download.status === 'scheduled' && download.schedule && download.schedule.scheduled_time) {
-            const scheduleDate = new Date(download.schedule.scheduled_time);
-            const formattedDate = scheduleDate.toLocaleDateString();
-            const formattedTime = scheduleDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-            
-            scheduleInfo = `<div class="schedule-info">${formattedDate} ${formattedTime}</div>`;
-            if (download.schedule.recurrence) {
-                const recurrenceText = download.schedule.recurrence === 'daily' ? 'Daily' : 
-                                      download.schedule.recurrence === 'weekly' ? 'Weekly' : '';
-                if (recurrenceText) {
-                    scheduleInfo += `<div class="recurrence-info">${recurrenceText}</div>`;
-                }
-            }
-        }
-        
-        html += `
-            <div class="download-item" data-id="${id}">
-                <div class="item-checkbox">
-                    <input type="checkbox" ${isChecked}>
-                </div>
-                <div class="item-cell item-name">
-                    <i class="fa-solid ${categoryIcon}"></i>
-                    ${download.filename || 'Unknown'}
-                </div>
-                <div class="item-cell item-size">${formatSize(download.downloaded)} / ${formatSize(download.size)}</div>
-                <div class="item-cell item-status">
-                    <span class="status-badge ${statusClass}">
-                        <i class="fa-solid ${statusIcon}"></i>
-                        <span class="status-text">${statusText}</span>
-                        <div class="progress-bar-container">
-                            <div class="progress-bar ${progressBarClass}" style="width: ${progress}%"></div>
-                        </div>
-                    </span>
-                </div>
-                <div class="item-cell item-speed">${formatSpeed(download.speed)}</div>
-                <div class="item-cell item-time">${formatTimeLeft(download.time_left)}</div>
-                <div class="item-cell item-date">${formatDate(download.date_added)}</div>
-                <div class="item-cell item-schedule">${scheduleInfo}</div>
-            </div>
-        `;
-    }
-    container.innerHTML = html;
-    
-    // Add event listeners to checkboxes
-    document.querySelectorAll('.download-item input[type="checkbox"]').forEach(checkbox => {
-        checkbox.addEventListener('change', handleCheckboxChange);
-    });
-    
-    // Update the "select all" checkbox state
-    if (selectAllCheckbox) {
-        const allCheckboxes = document.querySelectorAll('.download-item input[type="checkbox"]');
-        const allChecked = allCheckboxes.length > 0 && Array.from(allCheckboxes).every(cb => cb.checked);
-        selectAllCheckbox.checked = allChecked;
-    }
-    
-    // Re-attach all event handlers
-    attachEventHandlers();
-    
-    // Update status bar and selection UI
-    updateStatusBar();
-    updateSelectionUI();
-    
-    // Apply current filters
-    applyFilters();
-}
-
-// Function to detect if a URL is a YouTube video
-function detectYouTubeUrl(url) {
-    if (!url) return false;
-    
-    try {
-        // Normalize the URL first
-        const normalizedUrl = normalizeUrl(url);
-        
-        // Check for various YouTube domain patterns
-        const youtubePatterns = [
-            '//youtube.com/watch',
-            '//youtube.com/shorts/',
-            '//youtube.com/v/',
-            '//youtube.com/embed/',
-            '//youtu.be/',
-            '//youtube.com/playlist',
-            '//music.youtube.com/watch',
-            '//gaming.youtube.com/watch'
-        ];
-        
-        // Check if normalized URL matches any YouTube patterns
-        for (const pattern of youtubePatterns) {
-            if (normalizedUrl.includes(pattern)) {
-                return true;
-            }
-        }
-        
-        return false;
-    } catch (e) {
-        console.error('Error detecting YouTube URL:', e);
-        
-        // Fallback to simpler detection if normalization fails
-        return url.includes('youtube.com/watch') || 
-               url.includes('youtu.be/') ||
-               url.includes('youtube.com/shorts/');
-    }
-}
-
-// Handle new download form submission
-document.getElementById('new-download-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const formData = new FormData(e.target);
-    
-    // Check if it's a YouTube URL
-    const url = formData.get('url');
-    const isYouTube = detectYouTubeUrl(url);
-    const category = formData.get('category');
-    
-    try {
-        // Show processing message for YouTube downloads
-        if (isYouTube || category === 'youtube') {
-            showNotification('Processing YouTube URL, this may take a moment...', 'info');
-        }
-        
-        // Prepare download request
-        const downloadData = {
-            url: url,
-            filename: formData.get('filename') || null,
-            save_path: formData.get('save_path') || null,
-            category: category || null,
-        };
-        
-        // Add YouTube-specific data if it's a YouTube URL
-        if (isYouTube || category === 'youtube') {
-            downloadData.is_youtube = true;
-            downloadData.youtube_type = formData.get('youtube_type') || 'video';
-        }
-        
-        // Call Eel function and wait for response
-        const response = await eel.add_download(downloadData)();
-        
-        // Check for errors
-        if (response.error) {
-            console.error('Error adding download:', response.error);
-            showNotification(`Failed to add download: ${response.error}`, 'error');
-            return;
-        }
-        
-        closeModal('new-download-modal');
-        e.target.reset();
-        
-        // Show success notification
-        if (isYouTube || category === 'youtube') {
-            showNotification('YouTube download added successfully! Processing will begin shortly.', 'success');
-        } else {
-            showNotification('Download added successfully!', 'success');
-        }
-        
-        await updateDownloads();
-    } catch (error) {
-        console.error('Error adding download:', error);
-        showNotification(`Failed to add download: ${error.message || 'Unknown error'}`, 'error');
-    }
-});
 
 // Update functions that handle API responses
 async function resumeSelectedDownloads() {
@@ -2268,8 +1875,16 @@ function getCategoryIconByExtension(ext) {
 }
 
 // Utility function for showing notifications
-function showNotification(message, type = 'info') {
-    // Create notification element if it doesn't exist
+function showNotification(message, type = 'info', clearPrevious = false) {
+    // If requested, clear all existing notifications
+    if (clearPrevious) {
+        const existingNotifications = document.querySelectorAll('.notification');
+        existingNotifications.forEach(notification => {
+            notification.remove();
+        });
+    }
+    
+    // Create notification container if it doesn't exist yet
     let notificationContainer = document.querySelector('.notification-container');
     if (!notificationContainer) {
         notificationContainer = document.createElement('div');
@@ -2277,31 +1892,68 @@ function showNotification(message, type = 'info') {
         document.body.appendChild(notificationContainer);
     }
     
-    // Create notification
+    // Create notification element
     const notification = document.createElement('div');
-    notification.className = `notification notification-${type}`;
+    notification.className = `notification ${type}`;
+    
+    // Add icon based on type
+    let icon = '';
+    switch (type) {
+        case 'success':
+            icon = '<i class="fa-solid fa-circle-check"></i>';
+            break;
+        case 'error':
+            icon = '<i class="fa-solid fa-circle-exclamation"></i>';
+            break;
+        case 'warning':
+            icon = '<i class="fa-solid fa-triangle-exclamation"></i>';
+            break;
+        default:
+            icon = '<i class="fa-solid fa-circle-info"></i>';
+    }
+    
+    // Set content with close button
     notification.innerHTML = `
-        <span class="notification-message">${message}</span>
-        <button class="notification-close">&times;</button>
+        ${icon}
+        <span>${message}</span>
+        <button class="close-notification"><i class="fa-solid fa-xmark"></i></button>
+        <div class="progress-bar-container">
+            <div class="progress-bar"></div>
+        </div>
     `;
     
     // Add to container
     notificationContainer.appendChild(notification);
     
     // Add close button functionality
-    const closeBtn = notification.querySelector('.notification-close');
-    closeBtn.addEventListener('click', () => {
-        notification.classList.add('notification-hiding');
-        setTimeout(() => notification.remove(), 300);
+    const closeButton = notification.querySelector('.close-notification');
+    closeButton.addEventListener('click', () => {
+        notification.classList.add('fade-out');
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        }, 300);
     });
     
-    // Auto-remove after 3 seconds
+    // Auto-close after 5 seconds
     setTimeout(() => {
         if (notification.parentNode) {
-            notification.classList.add('notification-hiding');
-            setTimeout(() => notification.remove(), 300);
+            notification.classList.add('fade-out');
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 300);
         }
-    }, 3000);
+    }, 5000);
+    
+    // Also show browser notification if appropriate
+    if ((type === 'success' && notificationSettings.notify_completion) ||
+        (type === 'error' && notificationSettings.notify_failure) ||
+        (type === 'info' && notificationSettings.notify_progress)) {
+        showDesktopNotification(`XcelerateDL - ${type.charAt(0).toUpperCase() + type.slice(1)}`, message, type);
+    }
 }
 
 // Function to initialize the sidebar menu
@@ -2537,3 +2189,405 @@ async function openFileLocation(downloadId) {
         showNotification('Failed to open file location.', 'error');
     }
 }
+
+// Initialize event listeners once DOM is loaded
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM fully loaded');
+    
+    // Load downloads when the page loads
+    setupDownloadsRefresh();
+    
+    // Initialize sidebar menu
+    initializeSidebarMenu();
+    
+    // Set up refresh button
+    setupRefreshButton();
+    
+    // Attach all event handlers for buttons and checkboxes
+    attachEventHandlers();
+    
+    // Set up YouTube URL detection
+    const urlInput = document.getElementById('download-url');
+    const youtubeOptions = document.querySelector('.youtube-options');
+    const categorySelect = document.getElementById('download-category');
+    
+    urlInput?.addEventListener('input', function() {
+        const isYouTubeUrl = detectYouTubeUrl(this.value);
+        
+        // Show/hide YouTube options
+        if (youtubeOptions) {
+            youtubeOptions.style.display = isYouTubeUrl ? 'block' : 'none';
+        }
+        
+        // Auto-select YouTube category if it's a YouTube URL
+        if (isYouTubeUrl && categorySelect) {
+            categorySelect.value = 'youtube';
+        }
+    });
+    
+    // Category change handler
+    categorySelect?.addEventListener('change', function() {
+        if (youtubeOptions) {
+            youtubeOptions.style.display = this.value === 'youtube' ? 'block' : 'none';
+        }
+    });
+});
+
+// Update progress bars without re-rendering the entire list
+function updateDownloadProgress() {
+    for (const [id, download] of Object.entries(downloads)) {
+        const downloadItem = document.querySelector(`.download-item[data-id="${id}"]`);
+        if (!downloadItem) continue;
+        
+        const progress = download.progress || 0;
+        
+        // Update progress bar with smoother transition
+        const progressBar = downloadItem.querySelector('.progress-bar');
+        if (progressBar) {
+            // Only update progress if it's meaningful to avoid random fluctuations
+            const currentWidth = parseFloat(progressBar.style.width) || 0;
+            const difference = Math.abs(progress - currentWidth);
+            
+            // Only update if the change is significant (more than 0.5%) or for specific states
+            if (difference > 0.5 || download.status === 'completed' || download.status === 'failed') {
+                progressBar.style.width = `${progress}%`;
+            }
+            
+            // Update progress bar class based on status
+            progressBar.className = 'progress-bar';
+            if (download.status === 'downloading') progressBar.classList.add('progress-downloading');
+            else if (download.status === 'paused') progressBar.classList.add('progress-paused');
+            else if (download.status === 'completed') progressBar.classList.add('progress-completed');
+            else if (download.status === 'failed') progressBar.classList.add('progress-failed');
+        }
+        
+        // Update speed with improved formatting
+        const speedElement = downloadItem.querySelector('.item-speed');
+        if (speedElement && download.speed !== undefined) {
+            const speedFormatted = formatSpeed(download.speed);
+            // Only update if the speed has changed to avoid flickering
+            if (speedElement.innerHTML !== speedFormatted) {
+                speedElement.innerHTML = speedFormatted;
+            }
+        }
+        
+        // Update time left
+        const timeElement = downloadItem.querySelector('.item-time');
+        if (timeElement) {
+            timeElement.textContent = formatTimeLeft(download.time_left);
+        }
+        
+        // Update status
+        const statusElement = downloadItem.querySelector('.status-badge');
+        if (statusElement) {
+            statusElement.className = `status-badge ${download.status}`;
+            statusElement.querySelector('.status-text').textContent = download.status;
+        }
+        
+        // Update size downloaded
+        const sizeElement = downloadItem.querySelector('.item-size');
+        if (sizeElement) {
+            const totalSize = formatSize(download.size);
+            const downloadedSize = formatSize(download.downloaded || download.size_downloaded || 0);
+            sizeElement.textContent = `${downloadedSize} / ${totalSize}`;
+        }
+    }
+    
+    // Update status bar
+    updateStatusBar();
+}
+
+// Handle "Select All" checkbox
+function handleSelectAll(e) {
+    const isChecked = e.target.checked;
+    const checkboxes = document.querySelectorAll('.download-checkbox input[type="checkbox"]');
+    
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = isChecked;
+        const downloadId = checkbox.closest('.download-item').dataset.id;
+        
+        if (isChecked) {
+            selectedDownloads.add(downloadId);
+        } else {
+            selectedDownloads.delete(downloadId);
+        }
+    });
+    
+    // Update UI based on selection
+    updateSelectionUI();
+}
+
+// Handle individual checkbox changes
+function handleCheckboxChange(e) {
+    const checkbox = e.target;
+    const downloadId = checkbox.closest('.download-item').dataset.id;
+    
+    if (checkbox.checked) {
+        selectedDownloads.add(downloadId);
+    } else {
+        selectedDownloads.delete(downloadId);
+        // Uncheck "select all" if any item is unchecked
+        document.getElementById('select-all').checked = false;
+    }
+    
+    // Update UI based on selection
+    updateSelectionUI();
+}
+
+// Update UI based on selection state
+function updateSelectionUI() {
+    const hasSelection = selectedDownloads.size > 0;
+    
+    // Enable/disable action buttons based on selection
+    document.querySelectorAll('.toolbar-button[data-action]').forEach(button => {
+        const action = button.dataset.action;
+        if (['resume', 'pause', 'delete'].includes(action)) {
+            button.disabled = !hasSelection;
+            button.classList.toggle('disabled', !hasSelection);
+        }
+    });
+}
+
+// Render downloads in the UI
+function renderDownloads() {
+    const container = document.getElementById('downloads-container');
+    
+    // If container doesn't exist yet, exit early
+    if (!container) {
+        console.warn("Downloads container not found in DOM");
+        return;
+    }
+    
+    // Handle empty downloads list
+    if (!downloads || Object.keys(downloads).length === 0) {
+        container.innerHTML = `
+            <div class="empty-list-message">
+                <i class="fa-solid fa-cloud-arrow-down fa-3x"></i>
+                <p>Your download list is empty</p>
+                <button class="btn-primary start-downloading-btn">
+                    <i class="fa-solid fa-plus"></i> Add New Download
+                </button>
+            </div>
+        `;
+        
+        // Re-add event listeners
+        attachEventHandlers();
+        
+        // Update select-all checkbox
+        const selectAllCheckbox = document.getElementById('select-all');
+        if (selectAllCheckbox) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.disabled = true;
+        }
+        
+        // Clear selection and update UI
+        selectedDownloads.clear();
+        updateSelectionUI();
+        return;
+    }
+
+    // Enable the select-all checkbox when we have downloads
+    const selectAllCheckbox = document.getElementById('select-all');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.disabled = false;
+    }
+
+    let html = '';
+    for (const [id, download] of Object.entries(downloads)) {
+        const isChecked = selectedDownloads.has(id) ? 'checked' : '';
+        const progress = download.progress || 0;
+        
+        // Colorize progress bar based on status
+        let progressBarClass = '';
+        if (download.status === 'downloading') progressBarClass = 'progress-downloading';
+        else if (download.status === 'paused') progressBarClass = 'progress-paused';
+        else if (download.status === 'completed') progressBarClass = 'progress-completed';
+        else if (download.status === 'failed') progressBarClass = 'progress-failed';
+        
+        // Handle optional file extension icon
+        const fileExtension = (download.filename || '').split('.').pop().toLowerCase();
+        const categoryIcon = getCategoryIconByExtension(fileExtension) || getCategoryIcon(download.category);
+        
+        // Create download items
+        const statusIcon = download.status === 'completed' ? 'fa-check-circle' :
+                          download.status === 'downloading' ? 'fa-circle-notch fa-spin' :
+                          download.status === 'paused' ? 'fa-pause-circle' :
+                          download.status === 'queued' ? 'fa-clock' :
+                          download.status === 'scheduled' ? 'fa-calendar-alt' :
+                          'fa-exclamation-circle';
+        
+        const statusClass = download.status === 'completed' ? 'status-completed' :
+                           download.status === 'downloading' ? 'status-downloading' :
+                           download.status === 'paused' ? 'status-paused' :
+                           download.status === 'queued' ? 'status-queued' :
+                           download.status === 'scheduled' ? 'status-scheduled' :
+                           'status-failed';
+        
+        const statusText = download.status === 'completed' ? 'Completed' :
+                          download.status === 'downloading' ? 'Downloading' :
+                          download.status === 'paused' ? 'Paused' :
+                          download.status === 'queued' ? 'Queued' :
+                          download.status === 'scheduled' ? 'Scheduled' :
+                          'Failed';
+                          
+        // Format scheduled time for display if applicable
+        let scheduleInfo = '';
+        if (download.status === 'scheduled' && download.schedule && download.schedule.scheduled_time) {
+            const scheduleDate = new Date(download.schedule.scheduled_time);
+            const formattedDate = scheduleDate.toLocaleDateString();
+            const formattedTime = scheduleDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            
+            scheduleInfo = `<div class="schedule-info">${formattedDate} ${formattedTime}</div>`;
+            if (download.schedule.recurrence) {
+                const recurrenceText = download.schedule.recurrence === 'daily' ? 'Daily' : 
+                                      download.schedule.recurrence === 'weekly' ? 'Weekly' : '';
+                if (recurrenceText) {
+                    scheduleInfo += `<div class="recurrence-info">${recurrenceText}</div>`;
+                }
+            }
+        }
+        
+        html += `
+            <div class="download-item" data-id="${id}">
+                <div class="item-checkbox">
+                    <input type="checkbox" ${isChecked}>
+                </div>
+                <div class="item-cell item-name">
+                    <i class="fa-solid ${categoryIcon}"></i>
+                    ${download.filename || 'Unknown'}
+                </div>
+                <div class="item-cell item-size">${formatSize(download.downloaded)} / ${formatSize(download.size)}</div>
+                <div class="item-cell item-status">
+                    <span class="status-badge ${statusClass}">
+                        <i class="fa-solid ${statusIcon}"></i>
+                        <span class="status-text">${statusText}</span>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar ${progressBarClass}" style="width: ${progress}%"></div>
+                        </div>
+                    </span>
+                </div>
+                <div class="item-cell item-speed">${formatSpeed(download.speed)}</div>
+                <div class="item-cell item-time">${formatTimeLeft(download.time_left)}</div>
+                <div class="item-cell item-date">${formatDate(download.date_added)}</div>
+                <div class="item-cell item-schedule">${scheduleInfo}</div>
+            </div>
+        `;
+    }
+    container.innerHTML = html;
+    
+    // Add event listeners to checkboxes
+    document.querySelectorAll('.download-item input[type="checkbox"]').forEach(checkbox => {
+        checkbox.addEventListener('change', handleCheckboxChange);
+    });
+    
+    // Update the "select all" checkbox state
+    if (selectAllCheckbox) {
+        const allCheckboxes = document.querySelectorAll('.download-item input[type="checkbox"]');
+        const allChecked = allCheckboxes.length > 0 && Array.from(allCheckboxes).every(cb => cb.checked);
+        selectAllCheckbox.checked = allChecked;
+    }
+    
+    // Re-attach all event handlers
+    attachEventHandlers();
+    
+    // Update status bar and selection UI
+    updateStatusBar();
+    updateSelectionUI();
+    
+    // Apply current filters
+    applyFilters();
+}
+
+// Function to detect if a URL is a YouTube video
+function detectYouTubeUrl(url) {
+    if (!url) return false;
+    
+    try {
+        // Normalize the URL first
+        const normalizedUrl = normalizeUrl(url);
+        
+        // Check for various YouTube domain patterns
+        const youtubePatterns = [
+            '//youtube.com/watch',
+            '//youtube.com/shorts/',
+            '//youtube.com/v/',
+            '//youtube.com/embed/',
+            '//youtu.be/',
+            '//youtube.com/playlist',
+            '//music.youtube.com/watch',
+            '//gaming.youtube.com/watch'
+        ];
+        
+        // Check if normalized URL matches any YouTube patterns
+        for (const pattern of youtubePatterns) {
+            if (normalizedUrl.includes(pattern)) {
+                return true;
+            }
+        }
+        
+        return false;
+    } catch (e) {
+        console.error('Error detecting YouTube URL:', e);
+        
+        // Fallback to simpler detection if normalization fails
+        return url.includes('youtube.com/watch') || 
+               url.includes('youtu.be/') ||
+               url.includes('youtube.com/shorts/');
+    }
+}
+
+// Handle new download form submission
+document.getElementById('new-download-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    // Show loading indicator
+    showLoadingOverlay();
+    
+    // Get form data
+    const formData = new FormData(e.target);
+    const downloadData = {
+        url: formData.get('url'),
+        filename: formData.get('filename') || null,
+        save_path: formData.get('save_path') || null,
+        category: formData.get('category') || null
+    };
+    
+    // Check if it's a YouTube URL
+    const isYoutube = detectYouTubeUrl(downloadData.url);
+    if (isYoutube) {
+        downloadData.is_youtube = true;
+        downloadData.youtube_type = formData.get('youtube_type') || 'video';
+    }
+    
+    // Get advanced options
+    downloadData.priority = parseInt(formData.get('priority') || '2');
+    
+    // Convert KB/s to B/s for max_speed
+    const maxSpeedKB = parseInt(formData.get('max_speed') || '0');
+    downloadData.max_speed = maxSpeedKB > 0 ? maxSpeedKB * 1024 : null;
+    
+    downloadData.max_retries = parseInt(formData.get('max_retries') || '3');
+    
+    try {
+        // Add download
+        const result = await eel.add_download(downloadData)();
+        
+        // Check for error
+        if (result && result.error) {
+            hideLoadingOverlay();
+            showNotification(`Error: ${result.error}`, 'error');
+            return;
+        }
+        
+        // Success - close modal and refresh
+        closeModal('new-download-modal');
+        e.target.reset();
+        showNotification(`Added download: ${result.filename || 'Unknown file'}`, 'success');
+        await updateDownloads();
+        hideLoadingOverlay();
+    } catch (error) {
+        console.error('Error adding download:', error);
+        hideLoadingOverlay();
+        showNotification(`Failed to add download: ${error.message || 'Unknown error'}`, 'error');
+    }
+});
