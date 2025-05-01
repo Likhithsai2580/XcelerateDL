@@ -325,12 +325,12 @@ class DownloadManager:
                         # Convert both times to UTC for comparison
                         utc_scheduled_time = scheduled_time.astimezone(UTC)
 
-                        # Only start if current time is AFTER or EQUAL TO scheduled time
-                        should_start_now = current_time >= utc_scheduled_time
-
                         print(
                             f"UTC comparison - Current: {current_time.isoformat()}, Scheduled: {utc_scheduled_time.isoformat()}, Should start: {should_start_now}"
                         )
+                        # Only start if current time is AFTER or EQUAL TO scheduled time
+                        should_start_now = current_time >= utc_scheduled_time
+
                     else:
                         # Make naive time timezone-aware by assuming it's in UTC
                         utc_scheduled_time = scheduled_time.replace(tzinfo=UTC)
@@ -486,6 +486,11 @@ class DownloadManager:
                     # Remove any temporary attributes we added
                     if "_last_broadcast_time" in download_dict:
                         download_dict.pop("_last_broadcast_time", None)
+                    
+                    # Remove custom tracking attributes we've added
+                    for attr in ['_last_saved_size', '_last_time', '_last_size']:
+                        if attr in download_dict:
+                            download_dict.pop(attr, None)
 
                     downloads_data[download_id] = download_dict
                 except Exception as e:
@@ -494,7 +499,14 @@ class DownloadManager:
 
             try:
                 # Use a temporary file for writing to avoid data corruption
-                temp_file = f"{self.storage_file}.tmp"
+                import random
+                import string
+                
+                # Generate a unique temp file name to avoid conflicts
+                random_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+                temp_file = f"{self.storage_file}.{random_suffix}.tmp"
+                
+                # Write to the temp file
                 async with aiofiles.open(temp_file, "w") as f:
                     await f.write(json.dumps(downloads_data, indent=2))
 
@@ -506,8 +518,48 @@ class DownloadManager:
 
                 # Only replace the original file if temp file is valid
                 import shutil
-
-                shutil.move(temp_file, self.storage_file)
+                
+                # Use proper error handling for the file move
+                max_retries = 3
+                retry_delay = 0.5  # seconds
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Use atomic replacement where possible
+                        if hasattr(shutil, 'move'):
+                            # On Windows, close any open handles to the file before replacing it
+                            if os.path.exists(self.storage_file) and sys.platform == 'win32':
+                                try:
+                                    # Force Python's garbage collection to release file handles
+                                    import gc
+                                    gc.collect()
+                                except Exception:
+                                    pass
+                            
+                            # Move the file (replace existing)
+                            shutil.move(temp_file, self.storage_file)
+                            break  # Success, exit the retry loop
+                        else:
+                            # Fallback for older Python versions
+                            if os.path.exists(self.storage_file):
+                                os.remove(self.storage_file)
+                            os.rename(temp_file, self.storage_file)
+                            break  # Success, exit the retry loop
+                    except PermissionError as e:
+                        if attempt < max_retries - 1:
+                            # Wait and retry
+                            print(f"File access conflict during save, retrying in {retry_delay}s...")
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                        else:
+                            # Last attempt failed
+                            print(f"Failed to save downloads after {max_retries} attempts: {e}")
+                            if os.path.exists(temp_file):
+                                try:
+                                    os.remove(temp_file)
+                                except:
+                                    pass
+                            return False
 
                 return True
             except Exception as e:
@@ -537,150 +589,6 @@ class DownloadManager:
             return True
         except Exception as e:
             print(f"Error saving bandwidth settings: {e}")
-            return False
-
-    async def load_downloads(self):
-        """Load downloads from a JSON file"""
-        if not os.path.exists(self.storage_file):
-            return False
-
-        try:
-            async with aiofiles.open(self.storage_file) as f:
-                content = await f.read()
-                downloads_data = json.loads(content)
-
-            # First pass to validate the data
-            valid_downloads = {}
-            duplicate_urls = {}
-
-            # Identify duplicates and track them for removal
-            for download_id, download_dict in downloads_data.items():
-                try:
-                    # Convert ISO datetime string back to datetime
-                    if isinstance(download_dict.get("date_added"), str):
-                        download_dict["date_added"] = datetime.fromisoformat(
-                            download_dict["date_added"]
-                        )
-                    else:
-                        # Skip entries with invalid date format
-                        print(f"Skipping download with invalid date: {download_id}")
-                        continue
-
-                    # Convert scheduled_time if it exists
-                    if download_dict.get("schedule") and download_dict["schedule"].get(
-                        "scheduled_time"
-                    ):
-                        if isinstance(download_dict["schedule"]["scheduled_time"], str):
-                            download_dict["schedule"]["scheduled_time"] = datetime.fromisoformat(
-                                download_dict["schedule"]["scheduled_time"]
-                            )
-                        else:
-                            # Invalid schedule time format
-                            download_dict["schedule"]["scheduled_time"] = None
-
-                    # Check for duplicate URLs - using improved normalization
-                    original_url = str(download_dict.get("url", "")).strip()
-                    url = normalize_url(original_url)
-                    
-                    if url:
-                        if url in duplicate_urls:
-                            # Found a duplicate URL, keep the newest one or completed one
-                            existing_id = duplicate_urls[url]
-                            existing_dict = valid_downloads.get(existing_id)
-
-                            # Keep the completed one if any, otherwise the newer one
-                            if existing_dict.get("status") == "completed":
-                                # Keep existing, ignore this one
-                                print(
-                                    f"Skipping duplicate download for URL: {url}, keeping completed one"
-                                )
-                                continue
-                            elif download_dict.get("status") == "completed":
-                                # Remove existing, keep this one
-                                print(
-                                    f"Replacing duplicate download for URL: {url} with completed one"
-                                )
-                                valid_downloads.pop(existing_id, None)
-                                valid_downloads[download_id] = download_dict
-                                duplicate_urls[url] = download_id
-                            else:
-                                # If any of the downloads is actively downloading or queued, prefer that one
-                                active_statuses = ["downloading", "queued", "paused"]
-                                if existing_dict.get("status") in active_statuses and download_dict.get("status") not in active_statuses:
-                                    # Keep the active one
-                                    print(f"Skipping duplicate download for URL: {url}, keeping active one")
-                                    continue
-                                elif download_dict.get("status") in active_statuses and existing_dict.get("status") not in active_statuses:
-                                    # Keep this active one, remove the inactive one
-                                    print(f"Replacing inactive duplicate download for URL: {url} with active one")
-                                    valid_downloads.pop(existing_id, None)
-                                    valid_downloads[download_id] = download_dict
-                                    duplicate_urls[url] = download_id
-                                else:
-                                    # Compare dates and keep newer one if both are in similar states
-                                    if download_dict["date_added"] > existing_dict["date_added"]:
-                                        print(
-                                            f"Replacing duplicate download for URL: {url} with newer one"
-                                        )
-                                        valid_downloads.pop(existing_id, None)
-                                        valid_downloads[download_id] = download_dict
-                                        duplicate_urls[url] = download_id
-                                    else:
-                                        # Keep existing, ignore this one
-                                        print(
-                                            f"Skipping duplicate download for URL: {url}, keeping newer one"
-                                        )
-                                        continue
-                        else:
-                            # First time seeing this URL
-                            valid_downloads[download_id] = download_dict
-                            duplicate_urls[url] = download_id
-                    else:
-                        # No URL, but still a valid entry
-                        valid_downloads[download_id] = download_dict
-
-                except Exception as e:
-                    print(f"Error validating download entry {download_id}: {e}")
-                    continue
-
-            # Now create objects only from valid entries
-            self.downloads = {}
-            for download_id, download_dict in valid_downloads.items():
-                try:
-                    # Create DownloadItem from dict
-                    download = DownloadItem(**download_dict)
-                    self.downloads[download_id] = download
-                except Exception as e:
-                    print(f"Error creating download object {download_id}: {e}")
-
-            # If we filtered out any downloads, save the cleaned up version
-            if len(downloads_data) != len(self.downloads):
-                print(
-                    f"Cleaned up downloads: removed {len(downloads_data) - len(self.downloads)} corrupt/duplicate entries"
-                )
-                await self.save_downloads()
-
-            return True
-        except Exception as e:
-            print(f"Error loading downloads: {e}")
-            return False
-
-    async def load_bandwidth_settings(self):
-        """Load bandwidth settings from a JSON file"""
-        if not os.path.exists(self.bandwidth_file):
-            # Default settings already set in __init__
-            return False
-
-        try:
-            async with aiofiles.open(self.bandwidth_file) as f:
-                content = await f.read()
-                settings_data = json.loads(content)
-
-            # Create BandwidthSettings from dict
-            self.bandwidth_settings = BandwidthSettings(**settings_data)
-            return True
-        except Exception as e:
-            print(f"Error loading bandwidth settings: {e}")
             return False
 
     async def update_bandwidth_settings(self, settings: BandwidthSettings) -> bool:
@@ -987,7 +895,7 @@ class DownloadManager:
             # Extract relevant information
             title = video_info.get("title", "Unknown YouTube Video")
             # Remove characters that might cause filename issues
-            title = re.sub(r'[\\/*?:"<>|]', "_", title)
+            title = re.sub(r'[\\/*?:"<>|]', "_", title)  # Remove illegal characters
             filename = f"{title}.mp4"  # Default to mp4 for videos
 
             # Get approximate file size if available
@@ -1103,33 +1011,32 @@ class DownloadManager:
                 utc_scheduled_time = scheduled_time.astimezone(UTC)
 
                 print(
-                    f"UTC comparison - Now: {now.isoformat()}, Scheduled: {utc_scheduled_time.isoformat()}"
+                    f"UTC comparison - Now: {now.isoformat()}, Scheduled: {utc_scheduled_time.isoformat()}, Should start: {should_start_now}"
                 )
-
                 # Only queue immediately if current time is AFTER or EQUAL TO scheduled time
-                if now >= utc_scheduled_time:
-                    print(
-                        f"Keeping status as QUEUED: Current time {now} is after or equal to scheduled time {utc_scheduled_time}"
-                    )
-                else:
-                    print(
-                        f"Setting status to SCHEDULED: Current time {now} is before scheduled time {utc_scheduled_time}"
-                    )
-                    initial_status = DownloadStatus.SCHEDULED
+                should_start_now = now >= utc_scheduled_time
+
+                print(
+                    f"Should start now: {should_start_now}"
+                )
             else:
                 # Make naive time timezone-aware by assuming it's in UTC
                 utc_scheduled_time = scheduled_time.replace(tzinfo=UTC)
 
                 # Only queue immediately if current time is AFTER or EQUAL TO scheduled time
-                if now >= utc_scheduled_time:
-                    print(
-                        f"Keeping status as QUEUED: Current time {now} is after or equal to scheduled time {utc_scheduled_time}"
-                    )
-                else:
-                    print(
-                        f"Setting status to SCHEDULED: Current time {now} is before scheduled time {utc_scheduled_time}"
-                    )
-                    initial_status = DownloadStatus.SCHEDULED
+                should_start_now = now >= utc_scheduled_time
+
+                print(
+                    f"Converted naive time to UTC: {utc_scheduled_time.isoformat()}, Should start: {should_start_now}"
+                )
+
+            # Check if it's time to start this download
+            if should_start_now:
+                # Immediate scheduling - start the download right away
+                initial_status = DownloadStatus.QUEUED
+            else:
+                # Future scheduling - mark as scheduled
+                initial_status = DownloadStatus.SCHEDULED
 
         print(f"Initial status for download: {initial_status.value}")
 
@@ -1950,8 +1857,15 @@ class DownloadManager:
                         "has already been downloaded" in line
                         or "Merging formats into" in line
                         or "100%" in line
+                        or "Deleting original file" in line
+                        or "has already been downloaded and merged" in line
+                        or "[ExtractAudio] Destination:" in line
+                        or "[download] Download completed" in line
+                        or "[info] Downloaded" in line
+                        or "ffmpeg" in line and "Merging" in line
                     ):
                         success_message_found = True
+                        print(f"Success indicator found in output: {line}")
 
                     # Parse progress information
                     self._parse_youtube_progress_line(download, line)
@@ -1983,6 +1897,8 @@ class DownloadManager:
                 download_complete
                 or success_message_found
                 or (return_code is not None and return_code == 0)
+                or (os.path.exists(download.save_path) and os.path.getsize(download.save_path) > 0 and 
+                    (download.size is None or os.path.getsize(download.save_path) >= download.size * 0.98))
             ):
                 # If we found success indicators, consider the download successful even if return code isn't 0
                 if download.youtube_type == YoutubeDownloadType.AUDIO:
@@ -2028,6 +1944,16 @@ class DownloadManager:
 
                 # Save immediately to ensure completed state is recorded
                 await self.save_downloads()
+
+                # Ensure the process has shutdown properly
+                try:
+                    if 'process_thread' in locals() and process_thread.is_alive():
+                        print(f"Waiting for YouTube download process to terminate for {download.name}")
+                        process_thread.join(timeout=5.0)  # Wait up to 5 seconds for thread to finish
+                        if process_thread.is_alive():
+                            print(f"Process thread still alive after timeout for {download.name}")
+                except Exception as e:
+                    print(f"Error during thread cleanup: {e}")
 
                 # Recalculate bandwidth allocation now that this download is complete
                 await self._recalculate_bandwidth_allocation()
@@ -2529,12 +2455,35 @@ class DownloadManager:
                             progress = download.progress  # Use the property
                             if download.size > 10 * 1024 * 1024:  # 10MB threshold for "large" files
                                 # Save every 5% progress for large files
-                                if progress % 5 < 1:
+                                if not hasattr(download, '_last_saved_size'):
+                                    download._last_saved_size = 0
+                                
+                                size_diff = download.size_downloaded - getattr(download, '_last_saved_size', 0)
+                                if progress % 5 < (
+                                    100 * size_diff / download.size
+                                ):
+                                    download._last_saved_size = download.size_downloaded
                                     asyncio.create_task(self.save_downloads())
                             else:
                                 # Save every 10% progress for smaller files
-                                if progress % 10 < 1:
+                                if not hasattr(download, '_last_saved_size'):
+                                    download._last_saved_size = 0
+                                
+                                size_diff = download.size_downloaded - getattr(download, '_last_saved_size', 0)
+                                if progress % 10 < (
+                                    100 * size_diff / download.size
+                                ):
+                                    download._last_saved_size = download.size_downloaded
                                     asyncio.create_task(self.save_downloads())
+
+                        # Update reference values for next iteration
+                        if not hasattr(download, '_last_time'):
+                            download._last_time = time.time()
+                        if not hasattr(download, '_last_size'):
+                            download._last_size = download.size_downloaded
+                            
+                        download._last_time = time.time()
+                        download._last_size = download.size_downloaded
 
                     except (ValueError, IndexError) as e:
                         # Skip lines that don't match expected format
@@ -2551,7 +2500,13 @@ class DownloadManager:
                         if size_bytes > 0:
                             download.size = size_bytes
                             download.size_downloaded = size_bytes
-                            # No need to set progress directly, it will be calculated from size_downloaded
+                            # No need to set progress directly as it will be calculated from size_downloaded
+
+                            # Initialize size_diff for this final state
+                            if not hasattr(download, '_last_saved_size'):
+                                download._last_saved_size = 0
+                            size_diff = size_bytes - getattr(download, '_last_saved_size', 0)
+                            download._last_saved_size = size_bytes
 
                         # Save the final state immediately
                         asyncio.create_task(self.save_downloads())
@@ -2995,9 +2950,149 @@ class DownloadManager:
         except (ValueError, IndexError):
             return 0
 
+    async def load_downloads(self):
+        """Load downloads from a JSON file"""
+        if not os.path.exists(self.storage_file):
+            return False
 
-# Singleton instance
-download_manager = DownloadManager()
+        try:
+            async with aiofiles.open(self.storage_file) as f:
+                content = await f.read()
+                downloads_data = json.loads(content)
+
+            # First pass to validate the data
+            valid_downloads = {}
+            duplicate_urls = {}
+
+            # Identify duplicates and track them for removal
+            for download_id, download_dict in downloads_data.items():
+                try:
+                    # Convert ISO datetime string back to datetime
+                    if isinstance(download_dict.get("date_added"), str):
+                        download_dict["date_added"] = datetime.fromisoformat(
+                            download_dict["date_added"]
+                        )
+                    else:
+                        # Skip entries with invalid date format
+                        print(f"Skipping download with invalid date: {download_id}")
+                        continue
+
+                    # Convert scheduled_time to ISO format if it exists
+                    if download_dict.get("schedule") and download_dict["schedule"].get(
+                        "scheduled_time"
+                    ):
+                        if isinstance(download_dict["schedule"]["scheduled_time"], str):
+                            download_dict["schedule"]["scheduled_time"] = datetime.fromisoformat(
+                                download_dict["schedule"]["scheduled_time"]
+                            )
+                        else:
+                            # Invalid schedule time format
+                            download_dict["schedule"]["scheduled_time"] = None
+
+                    # Check for duplicate URLs - using improved normalization
+                    original_url = str(download_dict.get("url", "")).strip()
+                    url = normalize_url(original_url)
+                    
+                    if url:
+                        if url in duplicate_urls:
+                            # Found a duplicate URL, keep the newest one or completed one
+                            existing_id = duplicate_urls[url]
+                            existing_dict = valid_downloads.get(existing_id)
+
+                            # Keep the completed one if any, otherwise the newer one
+                            if existing_dict.get("status") == "completed":
+                                # Keep existing, ignore this one
+                                print(
+                                    f"Skipping duplicate download for URL: {url}, keeping completed one"
+                                )
+                                continue
+                            elif download_dict.get("status") == "completed":
+                                # Remove existing, keep this one
+                                print(
+                                    f"Replacing duplicate download for URL: {url} with completed one"
+                                )
+                                valid_downloads.pop(existing_id, None)
+                                valid_downloads[download_id] = download_dict
+                                duplicate_urls[url] = download_id
+                            else:
+                                # If any of the downloads is actively downloading or queued, prefer that one
+                                active_statuses = ["downloading", "queued", "paused"]
+                                if existing_dict.get("status") in active_statuses and download_dict.get("status") not in active_statuses:
+                                    # Keep the active one
+                                    print(f"Skipping duplicate download for URL: {url}, keeping active one")
+                                    continue
+                                elif download_dict.get("status") in active_statuses and existing_dict.get("status") not in active_statuses:
+                                    # Keep this active one, remove the inactive one
+                                    print(f"Replacing inactive duplicate download for URL: {url} with active one")
+                                    valid_downloads.pop(existing_id, None)
+                                    valid_downloads[download_id] = download_dict
+                                    duplicate_urls[url] = download_id
+                                else:
+                                    # Compare dates and keep newer one if both are in similar states
+                                    if download_dict["date_added"] > existing_dict["date_added"]:
+                                        print(
+                                            f"Replacing duplicate download for URL: {url} with newer one"
+                                        )
+                                        valid_downloads.pop(existing_id, None)
+                                        valid_downloads[download_id] = download_dict
+                                        duplicate_urls[url] = download_id
+                                    else:
+                                        # Keep existing, ignore this one
+                                        print(
+                                            f"Skipping duplicate download for URL: {url}, keeping newer one"
+                                        )
+                                        continue
+                        else:
+                            # First time seeing this URL
+                            valid_downloads[download_id] = download_dict
+                            duplicate_urls[url] = download_id
+                    else:
+                        # No URL, but still a valid entry
+                        valid_downloads[download_id] = download_dict
+
+                except Exception as e:
+                    print(f"Error validating download entry {download_id}: {e}")
+                    continue
+
+            # Now create objects only from valid entries
+            self.downloads = {}
+            for download_id, download_dict in valid_downloads.items():
+                try:
+                    # Create DownloadItem from dict
+                    download = DownloadItem(**download_dict)
+                    self.downloads[download_id] = download
+                except Exception as e:
+                    print(f"Error creating download object {download_id}: {e}")
+
+            # If we filtered out any downloads, save the cleaned up version
+            if len(downloads_data) != len(self.downloads):
+                print(
+                    f"Cleaned up downloads: removed {len(downloads_data) - len(self.downloads)} corrupt/duplicate entries"
+                )
+                await self.save_downloads()
+
+            return True
+        except Exception as e:
+            print(f"Error loading downloads: {e}")
+            return False
+
+    async def load_bandwidth_settings(self):
+        """Load bandwidth settings from a JSON file"""
+        if not os.path.exists(self.bandwidth_file):
+            # Default settings already set in __init__
+            return False
+
+        try:
+            async with aiofiles.open(self.bandwidth_file) as f:
+                content = await f.read()
+                settings_data = json.loads(content)
+
+            # Create BandwidthSettings from dict
+            self.bandwidth_settings = BandwidthSettings(**settings_data)
+            return True
+        except Exception as e:
+            print(f"Error loading bandwidth settings: {e}")
+            return False
 
 def normalize_url(url: str) -> str:
     """
@@ -3047,3 +3142,6 @@ def normalize_url(url: str) -> str:
         print(f"Error normalizing URL {url}: {e}")
         # If normalization fails, return the original stripped URL
         return url.strip()
+
+# Singleton instance
+download_manager = DownloadManager()
