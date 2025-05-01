@@ -12,19 +12,23 @@
 
 </div>
 
-## 🚀 Features
+## 🚀 Overview
 
-- **⚡ Fast Downloads**: Multi-threaded, asynchronous downloading for maximum speed
-- **🎥 YouTube Support**: Download videos or extract audio as MP3
-- **⏯️ Flexible Control**: Pause, resume, or cancel downloads anytime
+XcelerateDL is a modern, high-performance download manager built with Python and FastAPI. It provides a powerful, asynchronous downloading engine capable of handling multiple concurrent downloads with intelligent bandwidth management. The application offers both a web interface and a desktop GUI mode, making it versatile for different use cases.
+
+## ✨ Key Features
+
+- **⚡ High-Performance Downloads**: Leverages asynchronous I/O and multi-threading for optimal download speeds
+- **🎥 YouTube Integration**: Download videos or extract audio as MP3 using yt-dlp
+- **⏯️ Download Control**: Pause, resume, or cancel downloads at any time
 - **🔄 Real-time Updates**: Monitor download progress via WebSockets
-- **📁 File Organization**: Auto-categorize downloads by file type
-- **📊 Queue Management**: Prioritize downloads with pause/resume all functionality
-- **💾 Persistent Storage**: Resume downloads after application restart
-- **🖥️ Dual Interface**: Use the REST API or standalone GUI
-- **🌐 Bandwidth Management**: Intelligent bandwidth allocation across multiple downloads
-- **⏰ Download Scheduling**: Schedule downloads for specific times/dates
-- **🔍 Advanced Search**: Powerful search functionality for finding downloads
+- **📁 Automatic File Organization**: Auto-categorize downloads by file type (videos, music, documents, etc.)
+- **📊 Queue Management**: Easily manage download queue with priority settings
+- **💾 Persistent State**: Resume downloads after application restart
+- **🖥️ Dual Interface**: Use either the web UI or standalone desktop GUI
+- **🌐 Bandwidth Management**: Intelligently allocate bandwidth across multiple downloads
+- **⏰ Advanced Scheduling**: Schedule downloads with recurrence options and smart scheduling
+- **🔍 Powerful Search**: Find downloads with advanced filtering options
 
 ## 📋 Table of Contents
 
@@ -36,8 +40,8 @@
 - [API Documentation](#-api-documentation)
 - [Configuration](#-configuration)
 - [Architecture](#-architecture)
-- [Contributing](#-contributing)
 - [Development](#-development)
+- [Contributing](#-contributing)
 - [License](#-license)
 
 ## 🚀 Quick Start
@@ -45,7 +49,7 @@
 ### Prerequisites
 
 - Python 3.8+ (3.13 recommended)
-- For YouTube downloads: ffmpeg
+- ffmpeg (required for YouTube downloads)
 
 ### Quick Install
 
@@ -62,7 +66,7 @@ venv\Scripts\activate
 source venv/bin/activate
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -e .
 
 # Start the application
 python -m app.main --gui
@@ -89,9 +93,9 @@ python -m app.main --gui
    source venv/bin/activate
    ```
 
-3. **Install dependencies**:
+3. **Install the application and its dependencies**:
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
 
 4. **Install ffmpeg** (required for YouTube downloads):
@@ -202,87 +206,6 @@ curl -X POST http://localhost:8000/api/downloads/bandwidth/settings \
   -d '{"total_bandwidth": 10485760, "allocation_mode": "priority"}'
 ```
 
-### Full API Reference
-
-For a complete list of available endpoints, parameters, and responses, see our [API Reference Section](#-api-reference) below.
-
-## 📘 API Reference
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/downloads` | GET | List all downloads with optional filtering |
-| `/api/downloads` | POST | Add a new download |
-| `/api/downloads/search` | POST | Search downloads with advanced criteria |
-| `/api/downloads/{id}` | GET | Get details of a specific download |
-| `/api/downloads/{id}/pause` | POST | Pause a specific download |
-| `/api/downloads/{id}/resume` | POST | Resume a specific download |
-| `/api/downloads/{id}` | DELETE | Delete a download, with option to delete file |
-| `/api/downloads/pause-all` | POST | Pause all active downloads |
-| `/api/downloads/resume-all` | POST | Resume all paused downloads |
-| `/api/downloads/{id}/open` | POST | Open downloaded file with default application |
-| `/api/downloads/{id}/settings` | POST | Update settings for a specific download |
-| `/api/downloads/{id}/schedule` | POST | Schedule a download for a specific time |
-| `/api/downloads/bandwidth/settings` | GET | Get current bandwidth settings |
-| `/api/downloads/bandwidth/settings` | POST | Update bandwidth settings |
-| `/api/downloads/scheduler/settings` | POST | Update scheduler check interval |
-| `/api/downloads/{id}/tags` | POST | Update tags for a download |
-| `/api/downloads/batch-schedule` | POST | Schedule multiple downloads at once |
-| `/api/downloads/smart-schedule` | POST | Intelligently schedule multiple downloads |
-| `/api/downloads/schedule-based-on-bandwidth` | POST | Schedule downloads based on available bandwidth |
-
-### Download Parameters
-
-When creating a download, you can specify these parameters:
-
-```json
-{
-  "url": "https://example.com/file.zip",
-  "filename": "myfile.zip",  // Optional: Auto-detected if not provided
-  "save_path": "/path/to/save",  // Optional: Uses default downloads folder if not specified
-  "category": "compressed",  // Optional: Auto-detected based on file extension
-  "is_youtube": false,  // Optional: Auto-detected from URL
-  "youtube_type": "video",  // Optional: "video" or "audio"
-  "priority": 2,  // Optional: 1=low, 2=normal, 3=high
-  "max_speed": 1048576,  // Optional: Limit download speed in bytes/sec
-  "max_retries": 3,  // Optional: Max retry attempts for failed downloads
-  "schedule": {  // Optional: Schedule settings
-    "scheduled_time": "2023-12-31T23:00:00",  // When to start the download
-    "recurrence": "weekly",  // "daily", "weekly", "monthly", or null for one-time
-    "days_of_week": [0, 3],  // For weekly: 0=Monday, 6=Sunday
-    "day_of_month": 15,  // For monthly: 1-31
-    "bandwidth_allocation": 30  // Optional: Percentage of bandwidth to use (0-100)
-  },
-  "bandwidth_allocation": 20,  // Optional: Percentage of bandwidth to allocate
-  "tags": ["linux", "iso"]  // Optional: Tags for organization and search
-}
-```
-
-### Status Codes
-
-| Status | Description |
-|--------|-------------|
-| `queued` | Download is waiting in queue |
-| `downloading` | Download is in progress |
-| `paused` | Download has been paused |
-| `completed` | Download has finished successfully |
-| `failed` | Download encountered an error |
-| `scheduled` | Download is scheduled for future |
-
-### File Categories
-
-| Category | Description |
-|----------|-------------|
-| `compressed` | ZIP, RAR, 7Z, etc. |
-| `programs` | EXE, MSI, DEB, etc. |
-| `videos` | MP4, MKV, AVI, etc. |
-| `music` | MP3, FLAC, WAV, etc. |
-| `pictures` | JPG, PNG, GIF, etc. |
-| `documents` | PDF, DOCX, XLSX, etc. |
-| `youtube` | YouTube videos or extracted audio |
-| `other` | Files not matching other categories |
-
 ## 📊 Bandwidth Management
 
 The bandwidth management system allows intelligent allocation of network resources:
@@ -313,7 +236,7 @@ The bandwidth management system allows intelligent allocation of network resourc
 
 ## ⏰ Download Scheduling
 
-Schedule downloads for specific times to better manage bandwidth usage:
+XcelerateDL offers a powerful scheduling system for downloads:
 
 ### Scheduling Options
 - One-time schedules (specific date and time)
@@ -329,36 +252,17 @@ Schedule downloads for specific times to better manage bandwidth usage:
 - Auto-retry for failed scheduled downloads
 - Custom schedule descriptions and notifications
 
-## 🔍 Advanced Search
-
-Use the powerful search functionality to find downloads with multiple criteria:
-
-### Search Parameters
-```json
-{
-  "query": "ubuntu",  // Text to search in name/url/tags
-  "category": "compressed",  // Filter by category
-  "status": ["completed", "failed"],  // Filter by one or more statuses
-  "date_from": "2023-01-01T00:00:00",  // Filter by date range
-  "date_to": "2023-12-31T23:59:59",
-  "min_size": 1048576,  // Filter by size range (bytes)
-  "max_size": 1073741824,
-  "tags": ["linux", "iso"]  // Filter by tags
-}
-```
-
 ## ⚙️ Configuration
 
-XcelerateDL's behavior can be configured through:
+XcelerateDL can be configured through:
 
-- **Environment Variables**: Set system-wide defaults
 - **Command Line Arguments**: Override defaults for the current session
-- **Settings UI**: Configure through the application interface
 - **API Endpoints**: Programmatically update settings
+- **Settings UI**: Configure through the application interface (in GUI mode)
 
 ### Command Line Arguments
 
-```
+```bash
 --gui               Start the GUI version
 --api-only          Start only the API server
 --port PORT         API server port (default: 8000)
@@ -378,95 +282,35 @@ XcelerateDL's behavior can be configured through:
 
 XcelerateDL follows a modern, modular architecture:
 
-- **FastAPI Backend**: Handles HTTP requests and WebSocket connections
-- **Download Manager**: Core service that manages the download queue and operations
-- **WebSocket Manager**: Provides real-time updates to connected clients
-- **Pydantic Models**: Ensures type validation and data integrity
-- **GUI**: Built with Eel for a seamless desktop experience
-
 ### Core Components
 
+#### FastAPI Backend
+- RESTful API endpoints for download management
+- WebSocket support for real-time updates
+- Automatic API documentation (Swagger UI and ReDoc)
+
 #### Download Manager
+- Handles download operations using asyncio
+- Manages the download queue based on priority
+- Processes YouTube downloads with yt-dlp
+- Implements bandwidth allocation logic
+- Manages scheduling system for downloads
 
-The heart of XcelerateDL is the `DownloadManager` class which:
-- Processes the download queue based on priority
-- Manages file download operations using async I/O
-- Handles YouTube video/audio downloading through yt-dlp
-- Maintains persistent download state
-- Manages download scheduling and bandwidth allocation
+#### WebSocket Manager
+- Manages client connections
+- Broadcasts download updates in real-time
+- Handles connection and disconnection events
 
-#### API Layer
+#### Data Models
+- Uses Pydantic for strict type validation
+- Ensures data integrity throughout the application
+- Provides clean serialization/deserialization
 
-The FastAPI-based API provides:
-- RESTful endpoints for managing downloads
-- WebSocket connections for real-time updates
-- Swagger documentation for easy integration
-- Comprehensive error handling
-
-#### User Interface
-
-XcelerateDL offers dual interfaces:
-- **Web UI**: Built with modern web technologies for browser access
-- **Desktop App**: Wrapped with Eel for a native-like experience
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how you can contribute:
-
-### Getting Started
-
-1. Fork the repository on GitHub
-2. Clone your fork to your local machine
-3. Set up the development environment
-4. Create a new branch for your feature or bugfix
-
-### Making Changes
-
-1. Make your changes following the coding style guidelines
-2. Add tests for your changes
-3. Run the existing tests to ensure nothing breaks
-4. Update documentation as needed
-
-### Submitting Changes
-
-1. Commit your changes with clear, descriptive commit messages
-2. Push your changes to your fork
-3. Create a pull request against the main repository
-4. Wait for review and address any feedback
-
-### Coding Standards
-
-- Follow PEP 8 guidelines for Python code
-- Use type hints wherever possible
-- Document functions and classes with docstrings
-- Format code with the project's specified formatter
-
-### Reporting Issues
-
-- Use the GitHub issue tracker to report bugs
-- Include detailed steps to reproduce the bug
-- Specify your operating system and Python version
-- Include logs or screenshots if applicable
+#### User Interfaces
+- Web UI built with HTML, CSS, and JavaScript
+- Desktop GUI using Eel for a native-like experience
 
 ## 🧪 Development
-
-### Setting Up a Development Environment
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/XcelerateDL.git
-cd XcelerateDL
-
-# Create and activate virtual environment
-python -m venv venv
-# On Windows:
-venv\Scripts\activate
-# On macOS/Linux:
-source venv/bin/activate
-
-# Install development dependencies
-pip install -r requirements.txt
-```
 
 ### Project Structure
 
@@ -474,18 +318,24 @@ pip install -r requirements.txt
 XcelerateDL/
 ├─ app/                   # Main application code
 │  ├─ api/                # API endpoints
+│  │  └─ downloads.py     # Download-related endpoints
 │  ├─ models/             # Data models
+│  │  └─ download.py      # Download and related models
 │  ├─ services/           # Business logic
+│  │  ├─ downloader.py    # Download manager service
+│  │  └─ ws_manager.py    # WebSocket manager
 │  ├─ static/             # Static assets for web UI
+│  │  ├─ css/             # CSS styles
+│  │  ├─ js/              # JavaScript code
+│  │  └─ images/          # UI images
 │  ├─ templates/          # HTML templates
+│  │  └─ index.html       # Main UI template
 │  ├─ gui.py              # GUI implementation
 │  ├─ main.py             # Application entry point
 ├─ docs/                  # Documentation
 ├─ downloads/             # Default download directory
-├─ requirements.txt       # Python dependencies
-├─ pyproject.toml         # Project metadata and configuration
-├─ README.md              # Project documentation
-├─ FUTUREPLAN.md          # Future development roadmap
+├─ pyproject.toml         # Project metadata and dependencies
+├─ README.md              # Project overview
 ```
 
 ### Running in Development Mode
@@ -510,13 +360,29 @@ delete_downloads.bat
 rm -rf downloads/*
 ```
 
-### Future Development
+## 🤝 Contributing
 
-For a detailed roadmap of planned features and improvements, see [FUTUREPLAN.md](FUTUREPLAN.md).
+Contributions are welcome! Here's how you can contribute:
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b my-new-feature`
+3. Make your changes
+4. Add tests for your changes
+5. Run the existing tests to ensure nothing breaks
+6. Commit your changes: `git commit -am 'Add some feature'`
+7. Push to the branch: `git push origin my-new-feature`
+8. Submit a pull request
+
+### Coding Standards
+
+- Follow PEP 8 guidelines for Python code
+- Use type hints wherever possible
+- Document functions and classes with docstrings
+- Format code with the project's formatter
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgements
 
