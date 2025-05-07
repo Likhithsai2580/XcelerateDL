@@ -350,10 +350,16 @@ def receive_notification(notification_data: dict) -> None:
 
 def format_download_for_ui(download: dict) -> dict:
     """Format the download data for the UI."""
-    # Calculate progress if not already provided
+    
+    status = download.get("status", "queued")  # Get status first
     progress = download.get("progress")
-    if progress is None and download.get("size") and download["size"] > 0:
+
+    if status == "completed":
+        progress = 100.0  # Force progress to 100 if completed
+    elif progress is None and download.get("size") and download["size"] > 0:
         progress = min(100, (download.get("size_downloaded", 0) / download["size"]) * 100)
+    elif progress is None:  # If progress is still None (e.g. size is 0 or not available, and not completed)
+        progress = 0  # Default to 0 
 
     # Handle datetime conversion for date_added
     date_added = download.get("date_added")
@@ -374,13 +380,13 @@ def format_download_for_ui(download: dict) -> dict:
         "filename": download["name"],
         "save_path": download.get("save_path", ""),
         "category": download.get("category", "other"),
-        "status": download.get("status", "queued"),
+        "status": status,  # Use the fetched status
         "size": download.get("size", 0),
         "downloaded": download.get("size_downloaded", 0),
         "speed": download.get("speed", 0),
         "time_left": download.get("time_left", 0),
         "date_added": date_added or 0,
-        "progress": progress or 0,
+        "progress": progress or 0,  # Ensure progress is not None
         "is_youtube": download.get("is_youtube", False),
         "youtube_type": download.get("youtube_type"),
     }
