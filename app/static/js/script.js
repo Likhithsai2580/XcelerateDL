@@ -40,6 +40,31 @@ function saveNotificationSettings() {
 
 // Wait for Eel to be ready
 window.addEventListener('load', function() {
+    // Check if Eel was loaded properly
+    if (typeof eel === 'undefined') {
+        console.error("Eel is not defined! Backend connection might be broken.");
+        
+        // Create notification container if it doesn't exist yet
+        let notificationContainer = document.querySelector('.notification-container');
+        if (!notificationContainer) {
+            notificationContainer = document.createElement('div');
+            notificationContainer.className = 'notification-container';
+            document.body.appendChild(notificationContainer);
+        }
+        
+        // Show error notification
+        const notification = document.createElement('div');
+        notification.className = 'notification error';
+        notification.innerHTML = `
+            <i class="fa-solid fa-circle-exclamation"></i>
+            <span>Backend connection error. Please restart the application.</span>
+            <button class="close-notification"><i class="fa-solid fa-xmark"></i></button>
+        `;
+        notificationContainer.appendChild(notification);
+        
+        return; // Don't proceed with initialization
+    }
+    
     // Show loading indicator
     showLoadingOverlay();
     
@@ -69,6 +94,8 @@ window.addEventListener('load', function() {
             
             // Initialize notification permission
             initializeNotifications();
+            
+            console.log("Application initialization complete");
         })
         .catch(error => {
             console.error('Error during initial load:', error);
@@ -576,11 +603,11 @@ function setupContextMenu() {
     // Add right-click event listener to download items
     document.addEventListener('click', function(e) {
         // Close any open context menus when clicking elsewhere
-        const openMenus = document.querySelectorAll('.context-menu, .empty-space-context-menu');
+        const openMenus = document.querySelectorAll('.context-menu, .empty-space-context-menu, .global-context-menu');
         openMenus.forEach(menu => menu.remove());
     });
     
-    // Listen for right clicks on download items or empty space
+    // Listen for right clicks anywhere in the document
     document.addEventListener('contextmenu', function(e) {
         // Check if clicked on a download item
         const downloadItem = e.target.closest('.download-item');
@@ -602,6 +629,11 @@ function setupContextMenu() {
             
             // Create empty space context menu
             createEmptySpaceContextMenu(e.clientX, e.clientY);
+        }
+        // Otherwise, show global context menu
+        else {
+            e.preventDefault();
+            createGlobalContextMenu(e.clientX, e.clientY);
         }
     });
 }
@@ -668,6 +700,92 @@ function createEmptySpaceContextMenu(x, y) {
     }
     if (menuRect.bottom > window.innerHeight) {
         menu.style.top = `${window.innerHeight - menuRect.height - 10}px`;
+    }
+}
+
+// Create context menu for everywhere else (global)
+function createGlobalContextMenu(x, y) {
+    // Remove any existing context menus
+    const existingMenus = document.querySelectorAll('.context-menu, .empty-space-context-menu, .global-context-menu');
+    existingMenus.forEach(menu => menu.remove());
+    
+    // Create menu element
+    const menu = document.createElement('div');
+    menu.className = 'global-context-menu';
+    
+    // Add menu items
+    let menuContent = `
+        <div class="context-menu-section">
+            <div class="global-menu-item" data-action="new-download">
+                <i class="fa-solid fa-plus"></i> Add New Download
+            </div>
+            <div class="empty-space-menu-separator"></div>
+            <div class="global-menu-item" data-action="resume-all">
+                <i class="fa-solid fa-play"></i> Resume All Downloads
+            </div>
+            <div class="global-menu-item" data-action="pause-all">
+                <i class="fa-solid fa-pause"></i> Pause All Downloads
+            </div>
+            <div class="empty-space-menu-separator"></div>
+            <div class="global-menu-item" data-action="settings">
+                <i class="fa-solid fa-gear"></i> Settings
+            </div>
+            <div class="global-menu-item" data-action="refresh">
+                <i class="fa-solid fa-arrows-rotate"></i> Refresh
+            </div>
+        </div>
+    `;
+    
+    // Set menu content
+    menu.innerHTML = menuContent;
+    
+    // Add event listeners for menu items
+    menu.querySelectorAll('.global-menu-item').forEach(item => {
+        item.addEventListener('click', handleGlobalMenuAction);
+    });
+    
+    // Position the menu
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    
+    // Add to document
+    document.body.appendChild(menu);
+    
+    // Adjust position if menu is outside viewport
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.right > window.innerWidth) {
+        menu.style.left = `${window.innerWidth - menuRect.width - 10}px`;
+    }
+    if (menuRect.bottom > window.innerHeight) {
+        menu.style.top = `${window.innerHeight - menuRect.height - 10}px`;
+    }
+}
+
+// Handle global context menu item clicks
+function handleGlobalMenuAction(e) {
+    const action = this.getAttribute('data-action');
+    
+    // Close the menu
+    const menu = this.closest('.global-context-menu');
+    if (menu) menu.remove();
+    
+    // Handle different actions
+    switch (action) {
+        case 'new-download':
+            openNewDownloadModal();
+            break;
+        case 'resume-all':
+            resumeAll();
+            break;
+        case 'pause-all':
+            pauseAll();
+            break;
+        case 'settings':
+            openSettingsModal();
+            break;
+        case 'refresh':
+            updateDownloads(true);
+            break;
     }
 }
 
@@ -1023,60 +1141,10 @@ function receiveNotification(notification) {
 }
 
 // Add this to the existing add_download function
-document.getElementById('new-download-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    // Show loading indicator
-    showLoadingOverlay();
-    
-    // Get form data
-    const formData = new FormData(e.target);
-    const downloadData = {
-        url: formData.get('url'),
-        filename: formData.get('filename') || null,
-        save_path: formData.get('save_path') || null,
-        category: formData.get('category') || null
-    };
-    
-    // Check if it's a YouTube URL
-    const isYoutube = detectYouTubeUrl(downloadData.url);
-    if (isYoutube) {
-        downloadData.is_youtube = true;
-        downloadData.youtube_type = formData.get('youtube_type') || 'video';
-    }
-    
-    // Get advanced options
-    downloadData.priority = parseInt(formData.get('priority') || '2');
-    
-    // Convert KB/s to B/s for max_speed
-    const maxSpeedKB = parseInt(formData.get('max_speed') || '0');
-    downloadData.max_speed = maxSpeedKB > 0 ? maxSpeedKB * 1024 : null;
-    
-    downloadData.max_retries = parseInt(formData.get('max_retries') || '3');
-    
-    try {
-        // Add download
-        const result = await eel.add_download(downloadData)();
-        
-        // Check for error
-        if (result && result.error) {
-            hideLoadingOverlay();
-            showNotification(`Error: ${result.error}`, 'error');
-            return;
-        }
-        
-        // Success - close modal and refresh
-        closeModal('new-download-modal');
-        e.target.reset();
-        showNotification(`Added download: ${result.filename || 'Unknown file'}`, 'success');
-        await updateDownloads();
-        hideLoadingOverlay();
-    } catch (error) {
-        console.error('Error adding download:', error);
-        hideLoadingOverlay();
-        showNotification(`Failed to add download: ${error.message || 'Unknown error'}`, 'error');
-    }
-});
+// REMOVE THIS DUPLICATE LISTENER
+// document.getElementById('new-download-form').addEventListener('submit', async (e) => {
+// ... entire function removed ...
+// });
 
 // Expose the eel function for updating download settings
 eel.expose(update_download_settings);
@@ -1191,9 +1259,20 @@ async function handleToolbarAction(e) {
 
 // Updated version of attachEventHandlers to include the settings button
 function attachEventHandlers() {
-    // Set up modal buttons
-    document.querySelector('.new-download-btn')?.addEventListener('click', () => openModal('new-download-modal'));
-    document.querySelector('.start-downloading-btn')?.addEventListener('click', () => openModal('new-download-modal'));
+    console.log('Attaching event handlers');
+    
+    // Set up modal buttons more directly (use both methods to ensure it works)
+    document.querySelectorAll('.new-download-btn, .start-downloading-btn').forEach(button => {
+        console.log('Found new download button:', button);
+        // Remove existing handlers to prevent duplicates
+        button.removeEventListener('click', openNewDownloadModal);
+        // Add fresh handler
+        button.addEventListener('click', function(e) {
+            console.log('New download button clicked');
+            e.preventDefault();
+            openNewDownloadModal();
+        });
+    });
     
     // Set up select-all checkbox
     const selectAllCheckbox = document.getElementById('select-all');
@@ -1225,8 +1304,123 @@ function attachEventHandlers() {
     // Set up toolbar buttons
     setupToolbarButtons();
     
-    // Set up refresh button
-    setupRefreshButton();
+    // Set up refresh button with direct handler
+    const refreshButton = document.getElementById('refresh-button');
+    if (refreshButton) {
+        // Remove any existing event listeners to prevent duplicates
+        const oldClickHandler = refreshButton.onclick;
+        if (oldClickHandler) {
+            refreshButton.removeEventListener('click', oldClickHandler);
+        }
+        
+        // Add fresh click handler
+        refreshButton.onclick = async function(e) {
+            console.log('Refresh button clicked directly');
+            e.preventDefault();
+            
+            // Prevent multiple clicks
+            if (refreshButton.disabled || refreshButton.classList.contains('loading')) {
+                return;
+            }
+            
+            // Disable the button and show loading state
+            refreshButton.disabled = true;
+            refreshButton.classList.add('loading');
+            
+            // Add a spinner icon while refreshing
+            const originalContent = refreshButton.innerHTML;
+            refreshButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Refreshing...</span>';
+            
+            try {
+                // Attempt to update downloads with forced refresh
+                await updateDownloads(true);
+                showNotification('Downloads refreshed successfully', 'success', true);
+            } catch (error) {
+                console.error('Error refreshing downloads:', error);
+                showNotification('Failed to refresh downloads. Please try again.', 'error', true);
+            } finally {
+                // Re-enable button and restore original content
+                refreshButton.disabled = false;
+                refreshButton.classList.remove('loading');
+                refreshButton.innerHTML = originalContent;
+            }
+        };
+    }
+    
+    // Also ensure the form submit handler is attached
+    const newDownloadForm = document.getElementById('new-download-form');
+    if (newDownloadForm) {
+        // Remove existing handlers to prevent duplicates
+        const oldSubmitHandler = newDownloadForm.onsubmit;
+        if (oldSubmitHandler) {
+            newDownloadForm.removeEventListener('submit', oldSubmitHandler);
+        }
+        
+        // Attach new handler
+        newDownloadForm.onsubmit = async function(e) {
+            e.preventDefault();
+            console.log("New download form submitted");
+            
+            // Show loading indicator
+            showLoadingOverlay();
+            
+            // Get form data
+            const formData = new FormData(this);
+            const downloadData = {
+                url: formData.get('url'),
+                filename: formData.get('filename') || null,
+                save_path: formData.get('save_path') || null,
+                category: formData.get('category') || null
+            };
+            
+            console.log("Download data:", downloadData);
+            
+            // Check if it's a YouTube URL
+            const isYoutube = detectYouTubeUrl(downloadData.url);
+            if (isYoutube) {
+                downloadData.is_youtube = true;
+                downloadData.youtube_type = formData.get('youtube_type') || 'video';
+                console.log("Detected YouTube URL, added YouTube options");
+            }
+            
+            // Get advanced options
+            downloadData.priority = parseInt(formData.get('priority') || '2');
+            
+            // Convert KB/s to B/s for max_speed
+            const maxSpeedKB = parseInt(formData.get('max_speed') || '0');
+            downloadData.max_speed = maxSpeedKB > 0 ? maxSpeedKB * 1024 : null;
+            
+            downloadData.max_retries = parseInt(formData.get('max_retries') || '3');
+            console.log("Final download data:", downloadData);
+            
+            try {
+                // Add download
+                console.log("Calling eel.add_download()...");
+                const result = await eel.add_download(downloadData)();
+                console.log("Got response from add_download:", result);
+                
+                // Check for error
+                if (result && result.error) {
+                    hideLoadingOverlay();
+                    showNotification(`Error: ${result.error}`, 'error');
+                    return;
+                }
+                
+                // Success - close modal and refresh
+                closeModal('new-download-modal');
+                this.reset();
+                showNotification(`Added download: ${result.filename || 'Unknown file'}`, 'success');
+                await updateDownloads(true);
+                hideLoadingOverlay();
+            } catch (error) {
+                console.error('Error adding download:', error);
+                hideLoadingOverlay();
+                showNotification(`Failed to add download: ${error.message || 'Unknown error'}`, 'error');
+            }
+            
+            return false; // Prevent form submission
+        };
+    }
 }
 
 // Show loading overlay
@@ -1314,8 +1508,19 @@ async function updateDownloads(forceRefresh = false) {
     lastRefreshTime = now;
     
     try {
+        console.log("Calling eel.get_downloads()...");
+        
+        // Check if Eel function exists before calling it
+        if (typeof eel === 'undefined' || typeof eel.get_downloads !== 'function') {
+            console.error("Eel or eel.get_downloads is not available!");
+            showNotification("Backend communication error: API not available", "error");
+            isRefreshing = false;
+            throw new Error("Eel API not available");
+        }
+        
         // Call Eel function and wait for response
         const newDownloads = await eel.get_downloads()();
+        console.log("Got response from eel.get_downloads():", newDownloads);
         
         // Check if we got an error or empty response
         if (!newDownloads) {
@@ -1482,8 +1687,6 @@ function setupRefreshButton() {
             // Add a spinner icon while refreshing
             const originalContent = refreshButton.innerHTML;
             refreshButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Refreshing...</span>';
-            
-            // No initial notification to reduce popup count
             
             try {
                 // Attempt to update downloads with forced refresh
@@ -1969,6 +2172,43 @@ function showNotification(message, type = 'info', clearPrevious = false) {
     }
 }
 
+// Function to open the new download modal
+function openNewDownloadModal() {
+    // Get the modal element
+    const modal = document.getElementById('new-download-modal');
+    if (!modal) {
+        console.error('New download modal not found');
+        showNotification('Could not open new download modal', 'error');
+        return;
+    }
+    
+    // Reset the form if it exists
+    const form = document.getElementById('new-download-form');
+    if (form) {
+        form.reset();
+        
+        // Reset YouTube options visibility
+        const youtubeOptions = document.querySelector('.youtube-options');
+        if (youtubeOptions) {
+            youtubeOptions.style.display = 'none';
+        }
+        
+        // Reset scheduling options if they exist
+        if (form.querySelector('.schedule-options')) {
+            form.querySelector('.schedule-options').style.display = 'none';
+        }
+        
+        // Reset checkbox for scheduling
+        const enableScheduleCheckbox = document.getElementById('enable-schedule');
+        if (enableScheduleCheckbox) {
+            enableScheduleCheckbox.checked = false;
+        }
+    }
+    
+    // Open the modal
+    openModal('new-download-modal');
+}
+
 // Function to initialize the sidebar menu
 function initializeSidebarMenu() {
     // Status filters (All Downloads, Finished, In Progress)
@@ -2218,6 +2458,48 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Attach all event handlers for buttons and checkboxes
     attachEventHandlers();
+    
+    // Enable direct click handlers for Add New Download button to ensure it works
+    document.querySelectorAll('.new-download-btn, .start-downloading-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            console.log('New download button clicked');
+            openNewDownloadModal();
+        });
+    });
+    
+    // Add direct click handler for refresh button
+    const refreshButton = document.getElementById('refresh-button');
+    if (refreshButton) {
+        refreshButton.addEventListener('click', async function() {
+            console.log('Refresh button clicked');
+            // Prevent multiple clicks
+            if (refreshButton.disabled || refreshButton.classList.contains('loading')) {
+                return;
+            }
+            
+            // Disable the button and show loading state
+            refreshButton.disabled = true;
+            refreshButton.classList.add('loading');
+            
+            // Add a spinner icon while refreshing
+            const originalContent = refreshButton.innerHTML;
+            refreshButton.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span>Refreshing...</span>';
+            
+            try {
+                // Attempt to update downloads with forced refresh
+                await updateDownloads(true);
+                showNotification('Downloads refreshed successfully', 'success', true);
+            } catch (error) {
+                console.error('Error refreshing downloads:', error);
+                showNotification('Failed to refresh downloads. Please try again.', 'error', true);
+            } finally {
+                // Re-enable button and restore original content
+                refreshButton.disabled = false;
+                refreshButton.classList.remove('loading');
+                refreshButton.innerHTML = originalContent;
+            }
+        });
+    }
     
     // Set up YouTube URL detection
     const urlInput = document.getElementById('download-url');
@@ -2550,6 +2832,7 @@ function detectYouTubeUrl(url) {
 // Handle new download form submission
 document.getElementById('new-download-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    console.log("New download form submitted");
     
     // Show loading indicator
     showLoadingOverlay();
@@ -2563,11 +2846,14 @@ document.getElementById('new-download-form')?.addEventListener('submit', async (
         category: formData.get('category') || null
     };
     
+    console.log("Download data:", downloadData);
+    
     // Check if it's a YouTube URL
     const isYoutube = detectYouTubeUrl(downloadData.url);
     if (isYoutube) {
         downloadData.is_youtube = true;
         downloadData.youtube_type = formData.get('youtube_type') || 'video';
+        console.log("Detected YouTube URL, added YouTube options");
     }
     
     // Get advanced options
@@ -2578,10 +2864,21 @@ document.getElementById('new-download-form')?.addEventListener('submit', async (
     downloadData.max_speed = maxSpeedKB > 0 ? maxSpeedKB * 1024 : null;
     
     downloadData.max_retries = parseInt(formData.get('max_retries') || '3');
+    console.log("Final download data:", downloadData);
     
     try {
+        // Check if Eel is available
+        if (typeof eel === 'undefined' || typeof eel.add_download !== 'function') {
+            console.error("Eel or eel.add_download is not available!");
+            showNotification("Backend communication error: API not available", "error");
+            hideLoadingOverlay();
+            return;
+        }
+        
+        console.log("Calling eel.add_download()...");
         // Add download
         const result = await eel.add_download(downloadData)();
+        console.log("Got response from add_download:", result);
         
         // Check for error
         if (result && result.error) {
@@ -2602,3 +2899,397 @@ document.getElementById('new-download-form')?.addEventListener('submit', async (
         showNotification(`Failed to add download: ${error.message || 'Unknown error'}`, 'error');
     }
 });
+
+// Handle download context menu item clicks
+function handleContextMenuAction(e) {
+    const action = this.getAttribute('data-action');
+    const downloadId = this.getAttribute('data-id');
+    
+    // Close the menu
+    const menu = this.closest('.context-menu');
+    if (menu) menu.remove();
+    
+    if (!downloadId) return;
+
+    // Handle different actions
+    switch (action) {
+        case 'pause':
+            (async () => {
+                try {
+                    showLoadingOverlay();
+                    const result = await eel.pause_download(downloadId)();
+                    if (result.error) {
+                        showNotification(`Error: ${result.error}`, 'error');
+                    } else {
+                        downloads[downloadId] = result;
+                        renderDownloads();
+                    }
+                } catch (error) {
+                    showNotification(`Error: ${error.message || 'Failed to pause download'}`, 'error');
+                } finally {
+                    hideLoadingOverlay();
+                }
+            })();
+            break;
+            
+        case 'resume':
+            (async () => {
+                try {
+                    showLoadingOverlay();
+                    const result = await eel.resume_download(downloadId)();
+                    if (result.error) {
+                        showNotification(`Error: ${result.error}`, 'error');
+                    } else {
+                        downloads[downloadId] = result;
+                        renderDownloads();
+                    }
+                } catch (error) {
+                    showNotification(`Error: ${error.message || 'Failed to resume download'}`, 'error');
+                } finally {
+                    hideLoadingOverlay();
+                }
+            })();
+            break;
+            
+        case 'delete':
+            showDeleteConfirmation(downloadId, false);
+            break;
+            
+        case 'delete-file':
+            showDeleteConfirmation(downloadId, true);
+            break;
+            
+        case 'open':
+            (async () => {
+                try {
+                    const result = await eel.open_download(downloadId)();
+                    if (result.error) {
+                        showNotification(`Error: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    showNotification(`Error: ${error.message || 'Failed to open file'}`, 'error');
+                }
+            })();
+            break;
+            
+        case 'copy-url':
+            (async () => {
+                const download = downloads[downloadId];
+                if (download && download.url) {
+                    const success = await copyToClipboard(download.url);
+                    if (success) {
+                        showNotification('URL copied to clipboard', 'success');
+                    } else {
+                        showNotification('Failed to copy URL to clipboard', 'error');
+                    }
+                }
+            })();
+            break;
+            
+        case 'open-location':
+            (async () => {
+                try {
+                    await openFileLocation(downloadId);
+                } catch (error) {
+                    showNotification(`Error: ${error.message || 'Failed to open file location'}`, 'error');
+                }
+            })();
+            break;
+            
+        case 'settings':
+            openDownloadSettings(downloadId);
+            break;
+            
+        case 'schedule':
+            openScheduleModal(downloadId);
+            break;
+    }
+}
+
+// Function to open download settings modal for a specific download
+function openDownloadSettings(downloadId) {
+    const download = downloads[downloadId];
+    if (!download) {
+        showNotification('Download not found', 'error');
+        return;
+    }
+    
+    // Get the settings modal elements
+    const modal = document.getElementById('download-settings-modal');
+    if (!modal) {
+        // If the modal doesn't exist, create it
+        createDownloadSettingsModal();
+    }
+    
+    // Fill the form with current values
+    document.getElementById('settings-download-id').value = downloadId;
+    document.getElementById('settings-download-name').textContent = download.filename;
+    
+    // Set priority
+    const prioritySelect = document.getElementById('settings-priority');
+    prioritySelect.value = download.priority || 2; // Default to normal
+    
+    // Set speed limit (convert from B/s to KB/s for display)
+    const maxSpeedInput = document.getElementById('settings-max-speed');
+    if (download.max_speed) {
+        maxSpeedInput.value = Math.round(download.max_speed / 1024);
+    } else {
+        maxSpeedInput.value = '';
+    }
+    
+    // Set max retries
+    const maxRetriesInput = document.getElementById('settings-max-retries');
+    maxRetriesInput.value = download.max_retries || 3; // Default to 3
+    
+    // Open the modal
+    openModal('download-settings-modal');
+}
+
+// Create the download settings modal if it doesn't exist
+function createDownloadSettingsModal() {
+    if (document.getElementById('download-settings-modal')) {
+        return; // Modal already exists
+    }
+    
+    const modalHtml = `
+        <div class="modal" id="download-settings-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2><i class="fa-solid fa-gear"></i> Download Settings</h2>
+                    <button class="close-modal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form id="download-settings-form" autocomplete="off">
+                        <input type="hidden" id="settings-download-id">
+                        <div class="form-group">
+                            <label>File: <span id="settings-download-name" class="filename"></span></label>
+                        </div>
+                        <div class="form-group">
+                            <label for="settings-priority"><i class="fa-solid fa-arrow-up-wide-short"></i> Priority:</label>
+                            <select id="settings-priority" name="priority" autocomplete="off">
+                                <option value="3">High</option>
+                                <option value="2" selected>Normal</option>
+                                <option value="1">Low</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="settings-max-speed"><i class="fa-solid fa-gauge-high"></i> Speed Limit (KB/s):</label>
+                            <input type="number" id="settings-max-speed" name="max_speed" placeholder="Unlimited" min="0" autocomplete="off">
+                            <p class="text-dim">Leave empty for no limit</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="settings-max-retries"><i class="fa-solid fa-rotate"></i> Maximum Retries:</label>
+                            <input type="number" id="settings-max-retries" name="max_retries" value="3" min="0" max="10" autocomplete="off">
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn-secondary close-modal">Cancel</button>
+                            <button type="submit" class="btn-primary">
+                                <i class="fa-solid fa-save"></i> Save Settings
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Add modal to the document
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    
+    // Add event listener for form submission
+    document.getElementById('download-settings-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        // Get form values
+        const downloadId = document.getElementById('settings-download-id').value;
+        const priority = parseInt(document.getElementById('settings-priority').value);
+        
+        // Convert KB/s to B/s for max_speed
+        const maxSpeedKB = document.getElementById('settings-max-speed').value;
+        const maxSpeed = maxSpeedKB ? parseInt(maxSpeedKB) * 1024 : null;
+        
+        const maxRetries = parseInt(document.getElementById('settings-max-retries').value);
+        
+        // Show loading indicator
+        showLoadingOverlay();
+        
+        try {
+            // Update settings
+            const result = await eel.update_download_settings(downloadId, priority, maxSpeed, maxRetries)();
+            
+            if (result.error) {
+                showNotification(`Error: ${result.error}`, 'error');
+            } else {
+                // Update local data
+                downloads[downloadId] = result;
+                
+                // Close modal and refresh UI
+                closeModal('download-settings-modal');
+                showNotification('Download settings updated successfully', 'success');
+                renderDownloads();
+            }
+        } catch (error) {
+            console.error('Error updating download settings:', error);
+            showNotification(`Error: ${error.message || 'Failed to update settings'}`, 'error');
+        } finally {
+            hideLoadingOverlay();
+        }
+    });
+    
+    // Add event listener for close button
+    const closeButtons = document.querySelectorAll('#download-settings-modal .close-modal');
+    closeButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            closeModal('download-settings-modal');
+        });
+    });
+}
+
+// Function to open the settings modal
+function openSettingsModal() {
+    // Get the settings modal elements
+    const modal = document.getElementById('settings-modal');
+    if (!modal) {
+        // If the modal doesn't exist, create it
+        createSettingsModal();
+    }
+    
+    // Open the modal
+    openModal('settings-modal');
+}
+
+// Create the settings modal if it doesn't exist
+function createSettingsModal() {
+    if (document.getElementById('settings-modal')) {
+        return; // Modal already exists
+    }
+    
+    const modalHtml = `
+        <div class="modal" id="settings-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2><i class="fa-solid fa-gear"></i> Settings</h2>
+                    <button class="close-modal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form id="app-settings-form" autocomplete="off">
+                        <div class="form-group">
+                            <div class="collapsible-header">
+                                <i class="fa-solid fa-bell"></i> Notifications
+                                <i class="fa-solid fa-chevron-down toggle-icon"></i>
+                            </div>
+                            <div class="collapsible-content notifications-settings" style="display: none;">
+                                <div class="checkbox-option">
+                                    <input type="checkbox" id="settings-notify-completion" name="notify_completion" checked>
+                                    <label for="settings-notify-completion">Show desktop notifications when downloads complete</label>
+                                </div>
+                                <div class="checkbox-option">
+                                    <input type="checkbox" id="settings-notify-failure" name="notify_failure" checked>
+                                    <label for="settings-notify-failure">Show desktop notifications when downloads fail</label>
+                                </div>
+                                <div class="checkbox-option">
+                                    <input type="checkbox" id="settings-notify-progress" name="notify_progress">
+                                    <label for="settings-notify-progress">Show desktop notifications for download progress</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <div class="collapsible-header">
+                                <i class="fa-solid fa-download"></i> Download Settings
+                                <i class="fa-solid fa-chevron-down toggle-icon"></i>
+                            </div>
+                            <div class="collapsible-content" style="display: none;">
+                                <div class="form-group">
+                                    <label for="settings-default-dir"><i class="fa-solid fa-folder"></i> Default Save Location:</label>
+                                    <input type="text" id="settings-default-dir" name="default_dir" placeholder="C:\Downloads" autocomplete="off">
+                                </div>
+                                <div class="form-group">
+                                    <label for="settings-concurrent-downloads"><i class="fa-solid fa-layer-group"></i> Maximum Concurrent Downloads:</label>
+                                    <input type="number" id="settings-concurrent-downloads" name="concurrent_downloads" value="3" min="1" max="10" autocomplete="off">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <div class="collapsible-header">
+                                <i class="fa-solid fa-gauge-high"></i> Performance
+                                <i class="fa-solid fa-chevron-down toggle-icon"></i>
+                            </div>
+                            <div class="collapsible-content" style="display: none;">
+                                <div class="form-group">
+                                    <label for="settings-global-speed-limit"><i class="fa-solid fa-tachometer-alt"></i> Global Speed Limit (KB/s):</label>
+                                    <input type="number" id="settings-global-speed-limit" name="global_speed_limit" placeholder="Unlimited" min="0" autocomplete="off">
+                                    <p class="text-dim">Leave empty for no limit</p>
+                                </div>
+                                <div class="checkbox-option">
+                                    <input type="checkbox" id="settings-bandwidth-management" name="bandwidth_management">
+                                    <label for="settings-bandwidth-management">Enable bandwidth management</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="form-actions">
+                            <button type="button" class="btn-secondary close-modal">Cancel</button>
+                            <button type="submit" class="btn-primary">
+                                <i class="fa-solid fa-save"></i> Save Settings
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Add modal to the document
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    
+    // Add event listener for form submission
+    document.getElementById('app-settings-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        // Get form values for notifications
+        notificationSettings.notify_completion = document.getElementById('settings-notify-completion').checked;
+        notificationSettings.notify_failure = document.getElementById('settings-notify-failure').checked;
+        notificationSettings.notify_progress = document.getElementById('settings-notify-progress').checked;
+        
+        // Save notification settings
+        saveNotificationSettings();
+        
+        // Close modal
+        closeModal('settings-modal');
+        showNotification('Settings saved successfully', 'success');
+    });
+    
+    // Add event listeners for collapsible sections
+    document.querySelectorAll('#settings-modal .collapsible-header').forEach(header => {
+        header.addEventListener('click', function() {
+            // Toggle active class
+            this.classList.toggle('active');
+            
+            // Find the content section
+            const content = this.nextElementSibling;
+            if (content && content.classList.contains('collapsible-content')) {
+                // Toggle display
+                if (content.style.display === 'none' || !content.style.display) {
+                    content.style.display = 'block';
+                } else {
+                    content.style.display = 'none';
+                }
+            }
+        });
+    });
+    
+    // Add event listener for close button
+    const closeButtons = document.querySelectorAll('#settings-modal .close-modal');
+    closeButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            closeModal('settings-modal');
+        });
+    });
+    
+    // Initialize notification settings
+    document.getElementById('settings-notify-completion').checked = notificationSettings.notify_completion;
+    document.getElementById('settings-notify-failure').checked = notificationSettings.notify_failure;
+    document.getElementById('settings-notify-progress').checked = notificationSettings.notify_progress;
+}

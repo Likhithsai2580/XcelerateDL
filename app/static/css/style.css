@@ -1471,6 +1471,39 @@ input[type="checkbox"]:focus {
     margin: 0.5rem 0;
 }
 
+/* Global context menu styles */
+.global-context-menu {
+    position: absolute;
+    z-index: 1000;
+    background-color: var(--bg-card);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-light);
+    padding: 0.5rem 0;
+    min-width: 220px;
+    animation: fadeIn 0.2s ease;
+}
+
+.global-menu-item {
+    padding: 0.75rem 1rem;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    transition: var(--hover-transition);
+}
+
+.global-menu-item:hover {
+    background-color: var(--bg-lighter);
+    color: var(--primary-light);
+}
+
+.global-menu-item i {
+    width: 24px;
+    margin-right: 0.75rem;
+    text-align: center;
+    color: var(--primary-light);
+}
+
 /* Context menu section */
 .context-menu-section {
     padding: 0.25rem 0;
