@@ -9,13 +9,11 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import UTC, datetime, timedelta, timezone
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode, unquote
+from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
 import aiofiles
 import aiohttp
-import requests
-from pydantic import HttpUrl
 
 from app.models.download import (
     BandwidthAllocationMode,
@@ -36,7 +34,7 @@ from app.services.ws_manager import manager as ws_manager
 class RateLimiter:
     def __init__(self, max_bytes_per_second=None):
         if max_bytes_per_second is not None and max_bytes_per_second <= 0:
-            self.max_bytes_per_second = None # Effectively disable if limit is 0 or negative
+            self.max_bytes_per_second = None  # Effectively disable if limit is 0 or negative
         else:
             self.max_bytes_per_second = max_bytes_per_second
         self.last_check_time = time.time()
@@ -489,9 +487,9 @@ class DownloadManager:
                     # Remove any temporary attributes we added
                     if "_last_broadcast_time" in download_dict:
                         download_dict.pop("_last_broadcast_time", None)
-                    
+
                     # Remove custom tracking attributes we've added
-                    for attr in ['_last_saved_size', '_last_time', '_last_size']:
+                    for attr in ["_last_saved_size", "_last_time", "_last_size"]:
                         if attr in download_dict:
                             download_dict.pop(attr, None)
 
@@ -504,11 +502,11 @@ class DownloadManager:
                 # Use a temporary file for writing to avoid data corruption
                 import random
                 import string
-                
+
                 # Generate a unique temp file name to avoid conflicts
-                random_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+                random_suffix = "".join(random.choices(string.ascii_letters + string.digits, k=8))
                 temp_file = f"{self.storage_file}.{random_suffix}.tmp"
-                
+
                 # Write to the temp file
                 async with aiofiles.open(temp_file, "w") as f:
                     await f.write(json.dumps(downloads_data, indent=2))
@@ -521,24 +519,25 @@ class DownloadManager:
 
                 # Only replace the original file if temp file is valid
                 import shutil
-                
+
                 # Use proper error handling for the file move
                 max_retries = 3
                 retry_delay = 0.5  # seconds
-                
+
                 for attempt in range(max_retries):
                     try:
                         # Use atomic replacement where possible
-                        if hasattr(shutil, 'move'):
+                        if hasattr(shutil, "move"):
                             # On Windows, close any open handles to the file before replacing it
-                            if os.path.exists(self.storage_file) and sys.platform == 'win32':
+                            if os.path.exists(self.storage_file) and sys.platform == "win32":
                                 try:
                                     # Force Python's garbage collection to release file handles
                                     import gc
+
                                     gc.collect()
                                 except Exception:
                                     pass
-                            
+
                             # Move the file (replace existing)
                             shutil.move(temp_file, self.storage_file)
                             break  # Success, exit the retry loop
@@ -551,7 +550,9 @@ class DownloadManager:
                     except PermissionError as e:
                         if attempt < max_retries - 1:
                             # Wait and retry
-                            print(f"File access conflict during save, retrying in {retry_delay}s...")
+                            print(
+                                f"File access conflict during save, retrying in {retry_delay}s..."
+                            )
                             await asyncio.sleep(retry_delay)
                             retry_delay *= 2  # Exponential backoff
                         else:
@@ -999,6 +1000,8 @@ class DownloadManager:
         """Add a new download and start it"""
         # Handle scheduling
         initial_status = DownloadStatus.QUEUED
+        should_start_now = True  # Default is to start now
+
         if request.schedule and request.schedule.scheduled_time:
             # If scheduled for future, mark as SCHEDULED
             scheduled_time = request.schedule.scheduled_time
@@ -1019,9 +1022,7 @@ class DownloadManager:
                 # Only queue immediately if current time is AFTER or EQUAL TO scheduled time
                 should_start_now = now >= utc_scheduled_time
 
-                print(
-                    f"Should start now: {should_start_now}"
-                )
+                print(f"Should start now: {should_start_now}")
             else:
                 # Make naive time timezone-aware by assuming it's in UTC
                 utc_scheduled_time = scheduled_time.replace(tzinfo=UTC)
@@ -1047,7 +1048,7 @@ class DownloadManager:
         original_url = str(request.url).strip()
         normalized_url = normalize_url(original_url)
         existing_download = None
-        
+
         for existing_id, download in self.downloads.items():
             download_normalized_url = normalize_url(str(download.url))
             if download_normalized_url == normalized_url:
@@ -1595,6 +1596,8 @@ class DownloadManager:
             await self._broadcast_download_update(download_id)
             return
 
+        print(f"Starting YouTube download for {download_id} - URL: {download.url}")
+
         # Set the download status to downloading
         download.status = DownloadStatus.DOWNLOADING
         await self._broadcast_download_update(download_id)
@@ -1607,10 +1610,14 @@ class DownloadManager:
 
         # Determine the output path
         output_path = download.save_path
+        print(f"Initial output path: {output_path}")
 
         # Get basic info about the video to display
         try:
+            print(f"Getting YouTube info for: {download.url}")
             title, size, description = await self.get_youtube_info(str(download.url))
+            print(f"YouTube info: title={title}, size={size}")
+
             if title:
                 download.name = title
 
@@ -1629,10 +1636,14 @@ class DownloadManager:
                         os.path.dirname(download.save_path), f"{safe_title}{extension}"
                     )
                     download.save_path = output_path
+                    print(f"Updated output path: {output_path}")
             if size:
                 download.size = size
         except Exception as e:
             print(f"Error getting YouTube info: {e}")
+            import traceback
+
+            traceback.print_exc()
             # Continue anyway, yt-dlp will handle it
 
         # Set up flags for tracking state
@@ -1718,8 +1729,10 @@ class DownloadManager:
         download.pause_resume_callback = pause_callback
 
         # Find yt-dlp
+        print("Finding yt-dlp command...")
         yt_dlp_cmd = self._find_yt_dlp_command()
         if not yt_dlp_cmd:
+            print("ERROR: yt-dlp command not found")
             download.status = DownloadStatus.FAILED
             await self._send_notification(
                 download_id,
@@ -1729,6 +1742,8 @@ class DownloadManager:
             )
             await self._broadcast_download_update(download_id)
             return
+
+        print(f"Using yt-dlp command: {yt_dlp_cmd}")
 
         # Prepare the yt-dlp command
         cmd = yt_dlp_cmd.copy()
@@ -1758,6 +1773,7 @@ class DownloadManager:
                     str(download.url),
                 ]
             )
+            print(f"YouTube VIDEO download command: {' '.join(cmd)}")
         elif download.youtube_type == YoutubeDownloadType.AUDIO:
             # Extract audio only
             cmd.extend(
@@ -1776,9 +1792,22 @@ class DownloadManager:
                     str(download.url),
                 ]
             )
+            print(f"YouTube AUDIO download command: {' '.join(cmd)}")
+
+        # Test yt-dlp command directly
+        print("Testing yt-dlp directly...")
+        test_cmd = yt_dlp_cmd.copy() + ["--version"]
+        try:
+            result = subprocess.run(
+                test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False
+            )
+            print(f"yt-dlp test result: code={result.returncode}, output={result.stdout.strip()}")
+        except Exception as e:
+            print(f"Error testing yt-dlp: {e}")
 
         # Start the download process
         if sys.platform == "win32":
+            # Windows implementation (unchanged)
             # Create a queue for reading output from the process
             import threading
             from queue import Queue
@@ -1789,6 +1818,7 @@ class DownloadManager:
             def run_process():
                 # Create a subprocess and capture output
                 try:
+                    print(f"Starting YouTube download subprocess with command: {' '.join(cmd)}")
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
@@ -1813,8 +1843,10 @@ class DownloadManager:
 
                     # Wait for process to complete
                     returncode = process.wait()
+                    print(f"YouTube download process completed with return code: {returncode}")
                     output_queue.put(f"YTDL_RC:{returncode}")
                 except Exception as e:
+                    print(f"Error in YouTube download process: {e}")
                     output_queue.put(f"YTDL_ERROR:{str(e)}")
 
             # Start process in a separate thread
@@ -1844,15 +1876,18 @@ class DownloadManager:
                     # Non-blocking with timeout
                     line = output_queue.get(timeout=1)
                     line = line.strip()
+                    print(f"yt-dlp output: {line}")
 
                     # Check for process completion
                     if line.startswith("YTDL_RC:"):
                         return_code = int(line.split(":", 1)[1])
+                        print(f"Received return code from yt-dlp: {return_code}")
                         if return_code == 0:
                             download_complete = True
                         break
                     elif line.startswith("YTDL_ERROR:"):
                         error_message = line.split(":", 1)[1]
+                        print(f"Received error from yt-dlp: {error_message}")
                         break
 
                     # Check for success message in the output
@@ -1865,7 +1900,7 @@ class DownloadManager:
                         or "[ExtractAudio] Destination:" in line
                         or "[download] Download completed" in line
                         or "[info] Downloaded" in line
-                        or "ffmpeg" in line and "Merging" in line
+                        or ("ffmpeg" in line and "Merging" in line)
                     ):
                         success_message_found = True
                         print(f"Success indicator found in output: {line}")
@@ -1884,7 +1919,8 @@ class DownloadManager:
                     current_time = time.time()
                     if (
                         not hasattr(download, "_last_broadcast_time")
-                        or current_time - getattr(download, "_last_broadcast_time", 0) >= 0.25  # Changed from 0.5
+                        or current_time - getattr(download, "_last_broadcast_time", 0)
+                        >= 0.25  # Changed from 0.5
                     ):
                         # Update at most four times per second
                         await self._broadcast_download_update(download_id)
@@ -1896,12 +1932,21 @@ class DownloadManager:
                     await asyncio.sleep(0.1)
 
             # Handle results
+            print(
+                f"Download loop completed. complete={download_complete}, success_message={success_message_found}, return_code={return_code}"
+            )
             if (
                 download_complete
                 or success_message_found
                 or (return_code is not None and return_code == 0)
-                or (os.path.exists(download.save_path) and os.path.getsize(download.save_path) > 0 and 
-                    (download.size is None or os.path.getsize(download.save_path) >= download.size * 0.98))
+                or (
+                    os.path.exists(download.save_path)
+                    and os.path.getsize(download.save_path) > 0
+                    and (
+                        download.size is None
+                        or os.path.getsize(download.save_path) >= download.size * 0.98
+                    )
+                )
             ):
                 # If we found success indicators, consider the download successful even if return code isn't 0
                 if download.youtube_type == YoutubeDownloadType.AUDIO:
@@ -1950,9 +1995,13 @@ class DownloadManager:
 
                 # Ensure the process has shutdown properly
                 try:
-                    if 'process_thread' in locals() and process_thread.is_alive():
-                        print(f"Waiting for YouTube download process to terminate for {download.name}")
-                        process_thread.join(timeout=5.0)  # Wait up to 5 seconds for thread to finish
+                    if "process_thread" in locals() and process_thread.is_alive():
+                        print(
+                            f"Waiting for YouTube download process to terminate for {download.name}"
+                        )
+                        process_thread.join(
+                            timeout=5.0
+                        )  # Wait up to 5 seconds for thread to finish
                         if process_thread.is_alive():
                             print(f"Process thread still alive after timeout for {download.name}")
                 except Exception as e:
@@ -2022,6 +2071,147 @@ class DownloadManager:
                     )
 
                 await self._broadcast_download_update(download_id)
+        else:
+            # Linux implementation using direct subprocess call
+            print(f"Starting Linux subprocess for YouTube download: {' '.join(cmd)}")
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    bufsize=1,
+                    universal_newlines=True,
+                    text=True,
+                )
+
+                # Process output and update progress
+                line_buffer = ""
+                download_complete = False
+                success_message_found = False
+
+                for line in iter(process.stdout.readline, ""):
+                    # Check for cancellation
+                    if is_cancelled:
+                        process.kill()
+                        break
+
+                    # Check for pause state
+                    if is_paused:
+                        await asyncio.sleep(0.5)
+                        continue
+
+                    line = line.strip()
+                    print(f"yt-dlp output: {line}")
+
+                    # Check for success indicators
+                    if (
+                        "has already been downloaded" in line
+                        or "Merging formats into" in line
+                        or "100%" in line
+                        or "Deleting original file" in line
+                        or "has already been downloaded and merged" in line
+                        or "[ExtractAudio] Destination:" in line
+                        or "[download] Download completed" in line
+                        or "[info] Downloaded" in line
+                        or ("ffmpeg" in line and "Merging" in line)
+                    ):
+                        success_message_found = True
+                        print(f"Success indicator found in output: {line}")
+
+                    # Parse progress information
+                    self._parse_youtube_progress_line(download, line)
+
+                    # Update UI frequently
+                    current_time = time.time()
+                    if (
+                        not hasattr(download, "_last_broadcast_time")
+                        or current_time - getattr(download, "_last_broadcast_time", 0) >= 0.25
+                    ):
+                        await self._broadcast_download_update(download_id)
+                        download._last_broadcast_time = current_time
+
+                # Wait for process to finish
+                return_code = process.wait()
+                print(f"Linux YouTube download process completed with return code: {return_code}")
+
+                # Handle the result
+                if return_code == 0 or success_message_found:
+                    # Success!
+                    if download.youtube_type == YoutubeDownloadType.AUDIO:
+                        print(f"Audio extracted successfully: {download.name}")
+                    else:
+                        print(f"Video downloaded successfully: {download.name}")
+
+                    download.status = DownloadStatus.COMPLETED
+                    download.speed = 0
+                    download.time_left = None
+
+                    # Update file information
+                    if os.path.exists(download.save_path):
+                        download.size = os.path.getsize(download.save_path)
+                        download.size_downloaded = download.size
+                    else:
+                        # Look for the file with a different name
+                        dir_path = os.path.dirname(download.save_path)
+                        if os.path.exists(dir_path):
+                            files = os.listdir(dir_path)
+                            if files:
+                                last_file = max(
+                                    [os.path.join(dir_path, f) for f in files], key=os.path.getctime
+                                )
+                                if os.path.isfile(last_file) and last_file.endswith(
+                                    (".mp4", ".mp3")
+                                ):
+                                    download.save_path = last_file
+                                    download.size = os.path.getsize(last_file)
+                                    download.size_downloaded = download.size
+
+                    # Send notifications
+                    await self._broadcast_download_update(download_id)
+                    await self._send_notification(
+                        download_id,
+                        "Download Complete",
+                        f"'{download.name}' has been downloaded successfully.",
+                        "success",
+                    )
+
+                    # Save status
+                    await self.save_downloads()
+                    await self._recalculate_bandwidth_allocation()
+                else:
+                    # Download failed
+                    error_message = f"Process failed with return code: {return_code}"
+                    print(f"Download failed: {download.name} - {error_message}")
+
+                    download.status = DownloadStatus.FAILED
+                    await self._broadcast_download_update(download_id)
+                    await self.save_downloads()
+
+                    # Send error notification
+                    await self._send_notification(
+                        download_id,
+                        "Download Failed",
+                        f"Failed to download '{download.name}': {error_message}",
+                        "error",
+                    )
+
+                    await self._recalculate_bandwidth_allocation()
+
+            except Exception as e:
+                print(f"Error in Linux YouTube download process: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+                download.status = DownloadStatus.FAILED
+                await self._broadcast_download_update(download_id)
+                await self.save_downloads()
+                await self._send_notification(
+                    download_id,
+                    "Download Failed",
+                    f"Error downloading '{download.name}': {str(e)}",
+                    "error",
+                )
 
     def _broadcast_download_update_sync(self, download_id: str):
         """Synchronous version of _broadcast_download_update for use in callbacks"""
@@ -2031,9 +2221,25 @@ class DownloadManager:
         """Find the yt-dlp command on the system, returns a list of command parts ready for subprocess"""
         possible_commands = [["yt-dlp"], ["yt-dlp.exe"], ["python", "-m", "yt_dlp"]]
 
+        # Add direct path to virtual environment if detected
+        venv_path = os.environ.get("VIRTUAL_ENV")
+        if venv_path:
+            # Check for yt-dlp in virtual environment bin directory
+            venv_bin = os.path.join(venv_path, "bin", "yt-dlp")
+            if os.path.exists(venv_bin):
+                possible_commands.insert(0, [venv_bin])  # Highest priority
+
+        # Check for .venv directory in project root
+        current_dir = os.getcwd()
+        venv_dir = os.path.join(current_dir, ".venv")
+        if os.path.exists(venv_dir):
+            venv_bin = os.path.join(venv_dir, "bin", "yt-dlp")
+            if os.path.exists(venv_bin):
+                possible_commands.insert(0, [venv_bin])  # Highest priority
+
         # Check if yt-dlp is in the Python scripts directory
         if sys.platform == "win32":
-            # Check common Python script directories on Windows
+            # Windows-specific paths (unchanged)
             python_paths = []
 
             # Current Python executable's directory
@@ -2082,8 +2288,26 @@ class DownloadManager:
                             possible_commands.append([expanded_path])
                 elif os.path.exists(path):
                     possible_commands.append([path])
+        else:
+            # Linux/Mac paths
+            python_dir = os.path.dirname(sys.executable)
+            linux_paths = [
+                "/usr/bin/yt-dlp",
+                "/usr/local/bin/yt-dlp",
+                os.path.expanduser("~/.local/bin/yt-dlp"),
+                os.path.join(python_dir, "yt-dlp"),
+            ]
 
-        # Try each command
+            # Add system Python executable with -m yt_dlp as high priority option
+            possible_commands.insert(0, [sys.executable, "-m", "yt_dlp"])
+
+            # Add Linux paths
+            for path in linux_paths:
+                if os.path.exists(path):
+                    possible_commands.insert(0, [path])  # Give Linux paths higher priority
+
+        # Try each command and print detailed debug info
+        print(f"Trying these possible yt-dlp commands: {possible_commands}")
         for cmd in possible_commands:
             try:
                 # Use subprocess to check if command exists
@@ -2092,10 +2316,14 @@ class DownloadManager:
                 else:
                     test_cmd = cmd.copy() + ["--version"]
 
+                print(f"Testing yt-dlp command: {' '.join(test_cmd)}")
                 result = subprocess.run(
                     test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False
                 )
 
+                print(
+                    f"Result: code={result.returncode}, stdout={result.stdout.strip()}, stderr={result.stderr.strip()}"
+                )
                 if result.returncode == 0:
                     version = result.stdout.strip()
                     print(f"Found yt-dlp: {' '.join(cmd)}, version: {version}")
@@ -2195,13 +2423,15 @@ class DownloadManager:
             # Try to find a download with same URL in failed state (recovery attempt)
             normalized_url = ""
             for potential_id, potential_download in self.downloads.items():
-                if potential_download.status == DownloadStatus.FAILED and potential_id.startswith(download_id[:8]):
+                if potential_download.status == DownloadStatus.FAILED and potential_id.startswith(
+                    download_id[:8]
+                ):
                     # Found a potential match by ID prefix
                     download = potential_download
                     download_id = potential_id
                     print(f"Found potential download by ID prefix: {potential_id}")
                     break
-                    
+
             if not download and normalized_url:
                 # Last resort: try to find by URL if we somehow have a URL but no download
                 for potential_id, potential_download in self.downloads.items():
@@ -2230,12 +2460,12 @@ class DownloadManager:
             print(f"Download {download_id} is already completed")
             return download
         elif download.status == DownloadStatus.SCHEDULED:
-            print(f"Can't resume scheduled download, will start at its scheduled time")
+            print("Can't resume scheduled download, will start at its scheduled time")
             return download
 
         # Set status to QUEUED
         download.status = DownloadStatus.QUEUED
-        
+
         # If there's an existing task, cancel it before starting a new one
         if download_id in self.tasks and not self.tasks[download_id].done():
             print(f"Cancelling existing task for download {download_id}")
@@ -2253,7 +2483,7 @@ class DownloadManager:
 
         # Broadcast the update
         await self._broadcast_download_update(download_id)
-        
+
         return download
 
     async def delete_download(self, download_id: str, delete_file: bool = False) -> bool:
@@ -2458,33 +2688,33 @@ class DownloadManager:
                             progress = download.progress  # Use the property
                             if download.size > 10 * 1024 * 1024:  # 10MB threshold for "large" files
                                 # Save every 5% progress for large files
-                                if not hasattr(download, '_last_saved_size'):
+                                if not hasattr(download, "_last_saved_size"):
                                     download._last_saved_size = 0
-                                
-                                size_diff = download.size_downloaded - getattr(download, '_last_saved_size', 0)
-                                if progress % 5 < (
-                                    100 * size_diff / download.size
-                                ):
+
+                                size_diff = download.size_downloaded - getattr(
+                                    download, "_last_saved_size", 0
+                                )
+                                if progress % 5 < (100 * size_diff / download.size):
                                     download._last_saved_size = download.size_downloaded
                                     asyncio.create_task(self.save_downloads())
                             else:
                                 # Save every 10% progress for smaller files
-                                if not hasattr(download, '_last_saved_size'):
+                                if not hasattr(download, "_last_saved_size"):
                                     download._last_saved_size = 0
-                                
-                                size_diff = download.size_downloaded - getattr(download, '_last_saved_size', 0)
-                                if progress % 10 < (
-                                    100 * size_diff / download.size
-                                ):
+
+                                size_diff = download.size_downloaded - getattr(
+                                    download, "_last_saved_size", 0
+                                )
+                                if progress % 10 < (100 * size_diff / download.size):
                                     download._last_saved_size = download.size_downloaded
                                     asyncio.create_task(self.save_downloads())
 
                         # Update reference values for next iteration
-                        if not hasattr(download, '_last_time'):
+                        if not hasattr(download, "_last_time"):
                             download._last_time = time.time()
-                        if not hasattr(download, '_last_size'):
+                        if not hasattr(download, "_last_size"):
                             download._last_size = download.size_downloaded
-                            
+
                         download._last_time = time.time()
                         download._last_size = download.size_downloaded
 
@@ -2506,9 +2736,9 @@ class DownloadManager:
                             # No need to set progress directly as it will be calculated from size_downloaded
 
                             # Initialize size_diff for this final state
-                            if not hasattr(download, '_last_saved_size'):
+                            if not hasattr(download, "_last_saved_size"):
                                 download._last_saved_size = 0
-                            size_diff = size_bytes - getattr(download, '_last_saved_size', 0)
+                            size_diff = size_bytes - getattr(download, "_last_saved_size", 0)
                             download._last_saved_size = size_bytes
 
                         # Save the final state immediately
@@ -2995,7 +3225,7 @@ class DownloadManager:
                     # Check for duplicate URLs - using improved normalization
                     original_url = str(download_dict.get("url", "")).strip()
                     url = normalize_url(original_url)
-                    
+
                     if url:
                         if url in duplicate_urls:
                             # Found a duplicate URL, keep the newest one or completed one
@@ -3020,13 +3250,23 @@ class DownloadManager:
                             else:
                                 # If any of the downloads is actively downloading or queued, prefer that one
                                 active_statuses = ["downloading", "queued", "paused"]
-                                if existing_dict.get("status") in active_statuses and download_dict.get("status") not in active_statuses:
+                                if (
+                                    existing_dict.get("status") in active_statuses
+                                    and download_dict.get("status") not in active_statuses
+                                ):
                                     # Keep the active one
-                                    print(f"Skipping duplicate download for URL: {url}, keeping active one")
+                                    print(
+                                        f"Skipping duplicate download for URL: {url}, keeping active one"
+                                    )
                                     continue
-                                elif download_dict.get("status") in active_statuses and existing_dict.get("status") not in active_statuses:
+                                elif (
+                                    download_dict.get("status") in active_statuses
+                                    and existing_dict.get("status") not in active_statuses
+                                ):
                                     # Keep this active one, remove the inactive one
-                                    print(f"Replacing inactive duplicate download for URL: {url} with active one")
+                                    print(
+                                        f"Replacing inactive duplicate download for URL: {url} with active one"
+                                    )
                                     valid_downloads.pop(existing_id, None)
                                     valid_downloads[download_id] = download_dict
                                     duplicate_urls[url] = download_id
@@ -3097,6 +3337,7 @@ class DownloadManager:
             print(f"Error loading bandwidth settings: {e}")
             return False
 
+
 def normalize_url(url: str) -> str:
     """
     Normalize a URL to allow for better duplicate detection.
@@ -3109,42 +3350,43 @@ def normalize_url(url: str) -> str:
     """
     if not url:
         return ""
-    
+
     try:
         # Parse the URL
         parsed = urlparse(url)
-        
+
         # Normalize the netloc (domain) part - remove www if present
         netloc = parsed.netloc
-        if netloc.startswith('www.'):
+        if netloc.startswith("www."):
             netloc = netloc[4:]
-        
+
         # Normalize the path - ensure trailing slash consistency and decode URL encoding
         path = unquote(parsed.path)
-        if path == '':
-            path = '/'
-        
+        if path == "":
+            path = "/"
+
         # Sort query parameters for consistent ordering
         if parsed.query:
             query_params = parse_qs(parsed.query)
             # Sort the query parameters by key
             sorted_query = urlencode(sorted(query_params.items()), doseq=True)
         else:
-            sorted_query = ''
-        
+            sorted_query = ""
+
         # Rebuild the URL with normalized components (using https)
         # We intentionally ignore the scheme (http/https) for duplicate detection
-        normalized = urlunparse(('', netloc, path, parsed.params, sorted_query, ''))
-        
+        normalized = urlunparse(("", netloc, path, parsed.params, sorted_query, ""))
+
         # Remove trailing slash from normalized URL if it's just a slash
-        if normalized.endswith('/') and normalized != '/':
+        if normalized.endswith("/") and normalized != "/":
             normalized = normalized[:-1]
-            
+
         return normalized
     except Exception as e:
         print(f"Error normalizing URL {url}: {e}")
         # If normalization fails, return the original stripped URL
         return url.strip()
+
 
 # Singleton instance
 download_manager = DownloadManager()

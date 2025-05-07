@@ -1,6 +1,9 @@
 import argparse
 import asyncio
 import os
+import sys
+
+sys.path.append(os.getcwd())
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, Request, WebSocket, WebSocketDisconnect
