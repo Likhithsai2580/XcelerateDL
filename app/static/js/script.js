@@ -1750,18 +1750,31 @@ function formatSize(bytes) {
 }
 
 function formatSpeed(bytesPerSec) {
-    if (!bytesPerSec || bytesPerSec < 0 || bytesPerSec === undefined) return '0 B/s';
-    
-    // Format with appropriate units
+    if (!Number.isFinite(bytesPerSec) || bytesPerSec < 0) {
+        return '0 B/s'; // Handles NaN, Infinity, negative
+    }
+    if (bytesPerSec === 0) { // Handles exactly 0
+        return '0 B/s';
+    }
+
     const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-    const i = Math.floor(Math.log(Math.max(1, bytesPerSec)) / Math.log(1024));
+    let i = Math.floor(Math.log(bytesPerSec) / Math.log(1024));
+    
+    // Ensure 'i' is not negative (for speeds < 1 KB/s but > 0 B/s)
+    if (i < 0) {
+        i = 0;
+    }
+
     const value = (bytesPerSec / Math.pow(1024, i)).toFixed(2);
     
-    // Add color based on speed
     let speedClass = 'speed-low';
-    if (i >= 2) speedClass = 'speed-high'; // MB/s or higher
-    else if (i >= 1) speedClass = 'speed-medium'; // KB/s
-    
+    if (i >= 2) { // MB/s or GB/s
+        speedClass = 'speed-high';
+    } else if (i === 1) { // KB/s
+        speedClass = 'speed-medium';
+    }
+    // Default is speed-low for B/s (i=0)
+
     return `<span class="${speedClass}">${value} ${units[Math.min(i, units.length - 1)]}</span>`;
 }
 
@@ -2240,18 +2253,16 @@ function updateDownloadProgress() {
         if (!downloadItem) continue;
         
         const progress = download.progress || 0;
+        const finiteProgress = Number.isFinite(progress) ? progress : 0; // Ensure progress is a finite number
         
         // Update progress bar with smoother transition
         const progressBar = downloadItem.querySelector('.progress-bar');
         if (progressBar) {
             // Only update progress if it's meaningful to avoid random fluctuations
             const currentWidth = parseFloat(progressBar.style.width) || 0;
-            const difference = Math.abs(progress - currentWidth);
+            // const difference = Math.abs(finiteProgress - currentWidth); // No longer using difference check based on previous edit
             
-            // Only update if the change is significant (more than 0.5%) or for specific states
-            if (difference > 0.5 || download.status === 'completed' || download.status === 'failed') {
-                progressBar.style.width = `${progress}%`;
-            }
+            progressBar.style.width = `${finiteProgress}%`; // Use finiteProgress
             
             // Update progress bar class based on status
             progressBar.className = 'progress-bar';

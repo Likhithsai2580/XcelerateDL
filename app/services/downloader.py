@@ -35,7 +35,10 @@ from app.services.ws_manager import manager as ws_manager
 # Simple rate limiter for download speed control
 class RateLimiter:
     def __init__(self, max_bytes_per_second=None):
-        self.max_bytes_per_second = max_bytes_per_second
+        if max_bytes_per_second is not None and max_bytes_per_second <= 0:
+            self.max_bytes_per_second = None # Effectively disable if limit is 0 or negative
+        else:
+            self.max_bytes_per_second = max_bytes_per_second
         self.last_check_time = time.time()
         self.bytes_read_since_check = 0
 
@@ -1881,9 +1884,9 @@ class DownloadManager:
                     current_time = time.time()
                     if (
                         not hasattr(download, "_last_broadcast_time")
-                        or current_time - getattr(download, "_last_broadcast_time", 0) >= 0.5
+                        or current_time - getattr(download, "_last_broadcast_time", 0) >= 0.25  # Changed from 0.5
                     ):
-                        # Update at most twice per second
+                        # Update at most four times per second
                         await self._broadcast_download_update(download_id)
                         download._last_broadcast_time = current_time
 

@@ -426,8 +426,9 @@ body {
 
 .progress-bar {
     height: 100%;
+    background-color: var(--primary-color); /* Default color */
     border-radius: 4px;
-    transition: width 0.3s ease;
+    transition: width 0.3s ease-in-out, background-color 0.3s ease-in-out;
 }
 
 .status-queued {
@@ -921,20 +922,23 @@ input[type="checkbox"]:focus {
 
 /* Progress bar colors based on status */
 .progress-downloading {
-    background: linear-gradient(to right, var(--primary-color), var(--primary-light));
-    box-shadow: 0 0 5px rgba(99, 102, 241, 0.5);
+    background: linear-gradient(to right, var(--primary-light), var(--primary-color));
+    transition: width 0.2s linear, background-color 0.3s ease; /* Smoother transition for active downloads */
 }
 
 .progress-paused {
     background-color: var(--warning-color);
+    transition: width 0.3s ease-in-out, background-color 0.3s ease-in-out;
 }
 
 .progress-completed {
     background-color: var(--success-color);
+    transition: width 0.3s ease-in-out, background-color 0.3s ease-in-out;
 }
 
 .progress-failed {
     background-color: var(--error-color);
+    transition: width 0.3s ease-in-out, background-color 0.3s ease-in-out;
 }
 
 /* Notification styles */
