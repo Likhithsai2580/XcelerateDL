@@ -1748,13 +1748,17 @@ class DownloadManager:
         # Prepare the yt-dlp command
         cmd = yt_dlp_cmd.copy()
 
+        # Define the progress template
+        # Fields: status|total_bytes|downloaded_bytes|speed|eta|filename
+        YOUTUBE_PROGRESS_TEMPLATE = "PROGRESS:%(progress.status)s|%(progress.total_bytes)s|%(progress.downloaded_bytes)s|%(progress.speed)s|%(progress.eta)s|%(progress.filename)s"
+
         # Add rate limit if specified
         if download.max_speed:
             cmd.extend(["--limit-rate", f"{download.max_speed}"])
 
         # Add options for better progress reporting
-        # Use a simpler progress template that works better with all yt-dlp versions
-        cmd.extend(["--newline", "--progress"])
+        cmd.extend(["--newline"])  # Ensure each message is on a new line
+        cmd.extend(["--progress-template", YOUTUBE_PROGRESS_TEMPLATE])
 
         # Verbose mode for more detailed output
         cmd.append("-v")
@@ -2595,31 +2599,81 @@ class DownloadManager:
     def _parse_youtube_progress_line(self, download, line):
         """Parse a progress line from yt-dlp"""
         try:
-            # Check for our custom template format (bytes|speed|eta)
-            if "|" in line and line.count("|") == 2 and "/" in line and line.count("/") == 1:
-                try:
-                    # Format should be: downloaded_bytes/total_bytes|speed|eta
-                    size_part, speed_part, eta_part = line.split("|")
-                    downloaded, total = size_part.split("/")
+            # 1. Check for new PROGRESS: template
+            if line.startswith("PROGRESS:"):
+                parts = line[len("PROGRESS:"):].split("|")
+                if len(parts) == 6:
+                    status, total_bytes_str, downloaded_bytes_str, speed_str, eta_str, filename_str = parts
+                    
+                    # Update status (for logging or future use)
+                    # print(f"YT Progress Status: {status}, Filename: {filename_str}")
 
-                    # Parse size values, handling 'NA' values
-                    if downloaded.strip() and downloaded.strip().upper() != "NA":
-                        download.size_downloaded = int(downloaded)
+                    if total_bytes_str and total_bytes_str.lower() != 'na' and total_bytes_str.strip():
+                        try:
+                            total_bytes = int(float(total_bytes_str))
+                            if total_bytes > 0:
+                                download.size = total_bytes
+                        except ValueError:
+                            pass # Could not parse total_bytes
 
-                    if total.strip() and total.strip().upper() != "NA":
-                        download.size = int(total)
+                    if downloaded_bytes_str and downloaded_bytes_str.lower() != 'na' and downloaded_bytes_str.strip():
+                        try:
+                            download.size_downloaded = int(float(downloaded_bytes_str))
+                        except ValueError:
+                            pass # Could not parse downloaded_bytes
+                    
+                    if speed_str and speed_str.lower() != 'na' and speed_str.strip():
+                        try:
+                            speed = int(float(speed_str))
+                            if speed >= 0: # Speed can be 0
+                                download.speed = speed
+                        except ValueError:
+                            download.speed = 0 # Default if parsing numeric fails
+                    elif speed_str and speed_str.strip().lower() == 'na': # Explicitly handle 'na'
+                        download.speed = 0
 
-                    # Parse speed (should be in bytes/s), handling 'NA' values
-                    if speed_part.strip() and speed_part.strip().upper() != "NA":
-                        download.speed = int(float(speed_part))
+                    if eta_str and eta_str.lower() != 'na' and eta_str.strip():
+                        try:
+                            eta = int(float(eta_str))
+                            if eta >= 0: # ETA can be 0
+                                download.time_left = eta
+                        except ValueError:
+                            download.time_left = None # Default if parsing numeric fails
+                    elif eta_str and eta_str.strip().lower() == 'na': # Explicitly handle 'na'
+                        download.time_left = None
+                    
+                    # If total size is known, ensure downloaded_bytes does not exceed total_bytes
+                    if download.size and download.size > 0:
+                        download.size_downloaded = min(download.size_downloaded, download.size)
 
-                    # Parse ETA (should be in seconds), handling 'NA' values
-                    if eta_part.strip() and eta_part.strip().upper() != "NA":
-                        download.time_left = int(float(eta_part))
+                    return download # Processed with new template
 
-                    return download
-                except (ValueError, IndexError) as e:
-                    print(f"Error parsing custom progress template: {e}")
+            # Check for our custom template format (bytes|speed|eta) - This was a prior attempt, new template is better
+            # if "|" in line and line.count("|") == 2 and "/" in line and line.count("/") == 1:
+            # try:
+            # Format should be: downloaded_bytes/total_bytes|speed|eta
+            # size_part, speed_part, eta_part = line.split("|")
+            # downloaded, total = size_part.split("/")
+
+            # # Parse size values, handling 'NA' values
+            # if downloaded.strip() and downloaded.strip().upper() != "NA":
+            # download.size_downloaded = int(downloaded)
+
+            # if total.strip() and total.strip().upper() != "NA":
+            # download.size = int(total)
+
+            # # Parse speed (should be in bytes/s), handling 'NA' values
+            # if speed_part.strip() and speed_part.strip().upper() != "NA":
+            # download.speed = int(float(speed_part))
+
+            # # Parse ETA (should be in seconds), handling 'NA' values
+            # if eta_part.strip() and eta_part.strip().upper() != "NA":
+            # download.time_left = int(float(eta_part))
+
+            # return download
+            # except (ValueError, IndexError) as e:
+            # print(f"Error parsing custom progress template: {e}")
+
 
             if "[download]" in line:
                 # Handle regular progress lines like:
