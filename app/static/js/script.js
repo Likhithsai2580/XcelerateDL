@@ -15,6 +15,130 @@ let notificationSettings = {
     notify_failure: true,
     notify_progress: false
 };
+// WebSocket connection
+let wsConnection = null;
+let wsReconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_DELAY_MS = 3000;
+
+// WebSocket connection management
+function connectWebSocket() {
+    // Close existing connection if any
+    if (wsConnection) {
+        wsConnection.close();
+    }
+    
+    // Create new WebSocket connection
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    
+    wsConnection = new WebSocket(wsUrl);
+    
+    // Connection opened
+    wsConnection.onopen = function(event) {
+        console.log('WebSocket connection established');
+        wsReconnectAttempts = 0; // Reset reconnect attempts on successful connection
+        // Send a ping to verify connection is working
+        wsConnection.send('ping');
+    };
+    
+    // Connection error
+    wsConnection.onerror = function(error) {
+        console.error('WebSocket error:', error);
+    };
+    
+    // Connection closed
+    wsConnection.onclose = function(event) {
+        console.log('WebSocket connection closed', event);
+        
+        // Try to reconnect if not a normal closure and we haven't exceeded attempts
+        if (event.code !== 1000 && wsReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            wsReconnectAttempts++;
+            console.log(`Attempting to reconnect (${wsReconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+            setTimeout(connectWebSocket, RECONNECT_DELAY_MS);
+        } else if (wsReconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.error('Max WebSocket reconnect attempts reached');
+            showNotification('Real-time updates disconnected. Please refresh the page.', 'error');
+        }
+    };
+    
+    // Handle messages from server
+    wsConnection.onmessage = function(event) {
+        try {
+            const data = JSON.parse(event.data);
+            handleWebSocketMessage(data);
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+        }
+    };
+}
+
+// Handle different types of WebSocket messages
+function handleWebSocketMessage(data) {
+    switch (data.type) {
+        case 'update':
+        case 'download_update':
+            // Handle download update
+            if (data.download && data.download.id) {
+                const downloadId = data.download.id;
+                downloads[downloadId] = data.download;
+                renderDownloads();
+                updateStatusBar();
+            }
+            break;
+            
+        case 'add':
+            // Handle new download added
+            if (data.download && data.download.id) {
+                const downloadId = data.download.id;
+                downloads[downloadId] = data.download;
+                renderDownloads();
+                updateStatusBar();
+                showNotification(`New download added: ${data.download.name}`, 'info');
+            }
+            break;
+            
+        case 'delete_download':
+            // Handle download deleted
+            if (data.download_id) {
+                if (downloads[data.download_id]) {
+                    delete downloads[data.download_id];
+                    // Also remove from selected downloads if present
+                    selectedDownloads.delete(data.download_id);
+                    renderDownloads();
+                    updateStatusBar();
+                }
+            }
+            break;
+            
+        case 'downloads_list':
+            // Handle full downloads list
+            if (data.downloads && Array.isArray(data.downloads)) {
+                // Convert array to object with id as key
+                const newDownloads = {};
+                data.downloads.forEach(download => {
+                    newDownloads[download.id] = download;
+                });
+                downloads = newDownloads;
+                renderDownloads();
+                updateStatusBar();
+            }
+            break;
+            
+        case 'notification':
+            // Handle notification
+            receiveNotification(data);
+            break;
+            
+        case 'pong':
+            // Server responded to our ping
+            console.log('Received pong from server');
+            break;
+            
+        default:
+            console.log('Unhandled WebSocket message type:', data.type);
+    }
+}
 
 // Load notification settings from localStorage
 function loadNotificationSettings() {
@@ -74,8 +198,24 @@ window.addEventListener('load', function() {
             // Hide loading indicator after initial load
             hideLoadingOverlay();
             
-            // Set up periodic updates with a reasonable interval
-            setInterval(() => updateDownloads(false), 2000);
+            // Connect to WebSocket for real-time updates
+            connectWebSocket();
+            
+            // Keep a backup polling mechanism in case WebSocket fails
+            // but with a longer interval since WebSocket is primary now
+            setInterval(() => {
+                if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+                    console.log('WebSocket not connected, using fallback polling');
+                    updateDownloads(false);
+                }
+            }, 5000);
+            
+            // Set up periodic ping to keep WebSocket connection alive
+            setInterval(() => {
+                if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+                    wsConnection.send('ping');
+                }
+            }, 30000);
             
             // Set up advanced settings collapsible sections
             setupCollapsibleSections();
@@ -1123,6 +1263,22 @@ function receiveNotification(notification) {
     const title = notification.title || 'Notification';
     const message = notification.message || '';
     
+    // If the notification includes a download ID and the download exists, update it
+    if (notification.download_id && downloads[notification.download_id]) {
+        const downloadId = notification.download_id;
+        
+        // If this is a completion or failure notification, update the download status
+        if (notificationType === 'success' && title.includes('completed')) {
+            downloads[downloadId].status = 'completed';
+        } else if (notificationType === 'error' && title.includes('failed')) {
+            downloads[downloadId].status = 'failed';
+        }
+        
+        // Render the updated downloads list
+        renderDownloads();
+        updateStatusBar();
+    }
+    
     // Show in-app notification
     showNotification(message, notificationType);
     
@@ -1394,8 +1550,16 @@ function attachEventHandlers() {
             console.log("Final download data:", downloadData);
             
             try {
-                // Add download
+                // Check if Eel is available
+                if (typeof eel === 'undefined' || typeof eel.add_download !== 'function') {
+                    console.error("Eel or eel.add_download is not available!");
+                    showNotification("Backend communication error: API not available", "error");
+                    hideLoadingOverlay();
+                    return;
+                }
+                
                 console.log("Calling eel.add_download()...");
+                // Add download
                 const result = await eel.add_download(downloadData)();
                 console.log("Got response from add_download:", result);
                 
@@ -1410,15 +1574,13 @@ function attachEventHandlers() {
                 closeModal('new-download-modal');
                 this.reset();
                 showNotification(`Added download: ${result.filename || 'Unknown file'}`, 'success');
-                await updateDownloads(true);
+                await updateDownloads();
                 hideLoadingOverlay();
             } catch (error) {
                 console.error('Error adding download:', error);
                 hideLoadingOverlay();
                 showNotification(`Failed to add download: ${error.message || 'Unknown error'}`, 'error');
             }
-            
-            return false; // Prevent form submission
         };
     }
 }
@@ -1499,6 +1661,12 @@ function normalizeUrl(url) {
 async function updateDownloads(forceRefresh = false) {
     const now = Date.now();
     
+    // Skip refresh if we have an active WebSocket connection unless forced
+    if (!forceRefresh && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        console.log("Skipping API refresh as WebSocket connection is active");
+        return;
+    }
+    
     // If we're already refreshing or if it's too soon since the last refresh (unless forced)
     if (isRefreshing || (!forceRefresh && now - lastRefreshTime < REFRESH_THROTTLE_MS)) {
         return;
@@ -1577,53 +1745,55 @@ async function updateDownloads(forceRefresh = false) {
             
             const download = downloads[id];
             
-            // If a download is active (downloading/paused) but disappeared, check if we found it with a different ID
+            // If a download is active (downloading/paused/queued) but disappeared from polled list
             if (['downloading', 'paused', 'queued'].includes(download.status)) {
-                let foundDuplicate = false;
-                
-                // Check if we have this URL with a different ID in the new downloads
-                if (download.url) {
-                    const normalizedUrl = normalizeUrl(download.url);
-                    const urlDownloads = downloadsByUrl.get(normalizedUrl) || [];
-                    
-                    for (const {id: otherId, download: otherDownload, isNew} of urlDownloads) {
-                        // If this is a new download with the same URL
-                        if (isNew && id !== otherId) {
-                            console.log(`Found download ${otherId} with same URL as disappeared download ${id}`);
-                            foundDuplicate = true;
-                            // Don't add the disappeared download to updatedDownloads
-                            break;
+                // If it was downloading, try a recovery attempt.
+                if (download.status === 'downloading') {
+                    console.warn(`Download ${id} disappeared from polled list while 'downloading'. Attempting recovery.`);
+                    setTimeout(async () => {
+                        try {
+                            const result = await eel.resume_download(id)();
+                            if (result && !result.error) {
+                                console.log(`Recovery attempt for ${id} (resume_download) was actioned. State will update via WebSocket or next poll.`);
+                                // If result contains the download item, we can update it locally immediately.
+                                if (downloads[id] && result.id === id) {
+                                    downloads[id] = result;
+                                    renderDownloads(); 
+                                    updateStatusBar();
+                                }
+                                // DO NOT call await updateDownloads(true) here to prevent loops.
+                            } else if (result && result.error) {
+                                console.warn(`Recovery attempt for ${id} (resume_download) resulted in error: ${result.error}`);
+                                if(downloads[id]) {
+                                    downloads[id].status = 'failed';
+                                    downloads[id].error_message = `Recovery failed: ${result.error}`;
+                                    renderDownloads();
+                                    updateStatusBar();
+                                }
+                            } else {
+                                console.log(`Recovery attempt for ${id} (resume_download) returned no specific result/error. Current state might be stable or updated via WebSocket.`);
+                            }
+                        } catch (e) {
+                            console.error(`Exception during recovery attempt for ${id} (resume_download):`, e);
+                            if(downloads[id]) {
+                                downloads[id].status = 'failed';
+                                downloads[id].error_message = `Recovery exception: ${e.message || 'Unknown error'}`;
+                                renderDownloads();
+                                updateStatusBar();
+                            }
                         }
-                    }
-                }
-                
-                // If we didn't find a duplicate, preserve the download with an error state
-                if (!foundDuplicate) {
-                    console.warn(`Download ${id} disappeared while in ${download.status} state, preserving in UI as failed`);
+                    }, 2000);
+                } else {
+                    // For 'paused' or 'queued' items that disappeared, mark as failed in UI.
+                    // These shouldn't disappear without explicit deletion or completion.
+                    console.warn(`Download ${id} disappeared from polled list while '${download.status}'. Marking as failed locally.`);
                     updatedDownloads[id] = {
                         ...download,
                         status: 'failed',
                         speed: 0,
                         time_left: 0,
-                        error_message: 'Connection to download manager lost'
+                        error_message: 'Download disappeared unexpectedly from list'
                     };
-                    
-                    // Try to recover the download asynchronously if it was in downloading state
-                    if (download.status === 'downloading') {
-                        console.log(`Attempting to recover download ${id}`);
-                        setTimeout(async () => {
-                            try {
-                                // Try to get specific download info or resume it
-                                const result = await eel.resume_download(id)();
-                                if (result && !result.error) {
-                                    console.log(`Successfully recovered download ${id}`);
-                                    await updateDownloads(true);
-                                }
-                            } catch (e) {
-                                console.error(`Failed to recover download ${id}:`, e);
-                            }
-                        }, 2000); // Wait 2 seconds before attempting recovery
-                    }
                 }
             }
         }

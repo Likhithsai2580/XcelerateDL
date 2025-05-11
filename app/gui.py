@@ -3,6 +3,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 import eel
 import requests
@@ -15,7 +16,8 @@ eel.init("app", allowed_extensions=[".html", ".js", ".css"])
 API_BASE_URL = "http://localhost:8000/api/downloads"
 
 # Default request timeout value (in seconds)
-DEFAULT_REQUEST_TIMEOUT = 15.0
+DEFAULT_REQUEST_TIMEOUT = 30.0  # Increase default timeout from 15 to 30 seconds
+YOUTUBE_REQUEST_TIMEOUT = 60.0  # Set even longer timeout for YouTube
 
 # Thread to run the API server
 api_thread = None
@@ -101,6 +103,7 @@ def add_download(download_data) -> dict:
         if is_youtube:
             payload["is_youtube"] = True
             payload["youtube_type"] = youtube_type
+            print(f"Adding YouTube download: {url}")
 
         # Add scheduling parameters if provided
         schedule = download_data.get("schedule")
@@ -121,8 +124,30 @@ def add_download(download_data) -> dict:
         print(f"Sending download request with payload: {payload}")
 
         # Use a longer timeout for YouTube downloads
-        timeout = DEFAULT_REQUEST_TIMEOUT * 2 if is_youtube else DEFAULT_REQUEST_TIMEOUT
-        response = requests.post(f"{API_BASE_URL}", json=payload, timeout=timeout)
+        timeout = YOUTUBE_REQUEST_TIMEOUT if is_youtube else DEFAULT_REQUEST_TIMEOUT
+        
+        # For YouTube, use retry logic with backoff
+        if is_youtube:
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+            
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=1,
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=["POST"]
+            )
+            
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            session = requests.Session()
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            
+            print(f"Using retry strategy for YouTube download with timeout={timeout}s")
+            response = session.post(f"{API_BASE_URL}", json=payload, timeout=timeout)
+        else:
+            # Standard request for non-YouTube
+            response = requests.post(f"{API_BASE_URL}", json=payload, timeout=timeout)
 
         response.raise_for_status()
         result = response.json()
@@ -131,26 +156,60 @@ def add_download(download_data) -> dict:
         if "error" in result:
             return {"error": result["error"]}
 
-        return format_download_for_ui(result["download"])
+        # For YouTube downloads, inform the user that processing might continue
+        if is_youtube:
+            # Enhance the download info with extra indicators
+            download_info = format_download_for_ui(result["download"])
+            download_info["youtube_processing"] = True
+            download_info["message"] = "YouTube download started. Initial metadata extraction might take some time."
+            return download_info
+        else:
+            return format_download_for_ui(result["download"])
     except requests.exceptions.Timeout:
-        print("Request timed out while adding download")
-        return {
-            "error": "Request timed out. The server might be busy processing the download request. Check the downloads tab in a few moments to see if it was added successfully."
-        }
+        print(f"Request timed out while adding download (is_youtube={is_youtube})")
+        if is_youtube:
+            return {
+                "error": "YouTube processing timed out. The download might still be processing in the background. Check the downloads tab in a few moments to see if it was added successfully."
+            }
+        else:
+            return {
+                "error": "Request timed out. The server might be busy processing the download request. Check the downloads tab in a few moments to see if it was added successfully."
+            }
     except requests.exceptions.RequestException as e:
         print(f"Request error adding download: {e}")
         return {"error": f"Network error: {str(e)}"}
     except Exception as e:
         print(f"Error adding download: {e}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}
 
 
 @eel.expose
 def get_downloads() -> dict:
-    """Get all downloads from the API."""
+    """Get all downloads from the API.
+    
+    Note: This function may not be called as frequently when WebSocket updates are active.
+    """
     try:
-        # Add a timeout to prevent requests from hanging
-        response = requests.get(f"{API_BASE_URL}", timeout=DEFAULT_REQUEST_TIMEOUT)
+        # Use retry strategy for more robust API calls
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        
+        retry_strategy = Retry(
+            total=3,  # Maximum number of retries
+            backoff_factor=0.5,  # Exponential backoff factor
+            status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry on
+            allowed_methods=["GET"]  # Only retry on GET requests
+        )
+        
+        session = requests.Session()
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        # Use session with retry strategy
+        response = session.get(f"{API_BASE_URL}", timeout=DEFAULT_REQUEST_TIMEOUT)
         response.raise_for_status()
         downloads = response.json()["downloads"]
 
@@ -174,6 +233,8 @@ def get_downloads() -> dict:
         return {}
     except Exception as e:
         print(f"Error getting downloads: {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 
@@ -349,74 +410,135 @@ def receive_notification(notification_data: dict) -> None:
 
 
 def format_download_for_ui(download: dict) -> dict:
-    """Format the download data for the UI."""
-    
-    status = download.get("status", "queued")  # Get status first
-    progress = download.get("progress")
+    """Format a download object for the UI."""
+    try:
+        # Calculate progress
+        progress = 0
+        if download.get("size") and download["size"] > 0:
+            progress = min(100, (download.get("size_downloaded", 0) / download["size"]) * 100)
 
-    if status == "completed":
-        progress = 100.0  # Force progress to 100 if completed
-    elif progress is None and download.get("size") and download["size"] > 0:
-        progress = min(100, (download.get("size_downloaded", 0) / download["size"]) * 100)
-    elif progress is None:  # If progress is still None (e.g. size is 0 or not available, and not completed)
-        progress = 0  # Default to 0 
-
-    # Handle datetime conversion for date_added
-    date_added = download.get("date_added")
-    if isinstance(date_added, str):
-        try:
-            from datetime import datetime
-
-            # Try to parse ISO format first
-            date_added = datetime.fromisoformat(date_added.replace("Z", "+00:00")).timestamp()
-        except (ValueError, TypeError):
-            # If parsing fails, use current timestamp
-            date_added = datetime.now().timestamp()
-
-    # Map API fields to UI fields
-    return {
-        "id": download["id"],
-        "url": str(download["url"]),
-        "filename": download["name"],
-        "save_path": download.get("save_path", ""),
-        "category": download.get("category", "other"),
-        "status": status,  # Use the fetched status
-        "size": download.get("size", 0),
-        "downloaded": download.get("size_downloaded", 0),
-        "speed": download.get("speed", 0),
-        "time_left": download.get("time_left", 0),
-        "date_added": date_added or 0,
-        "progress": progress or 0,  # Ensure progress is not None
-        "is_youtube": download.get("is_youtube", False),
-        "youtube_type": download.get("youtube_type"),
-    }
+        # Create a consistent structure for the UI
+        return {
+            "id": download["id"],
+            "url": str(download["url"]),
+            "filename": download["name"],
+            "save_path": download["save_path"],
+            "category": download["category"],
+            "status": download["status"],
+            "size": download.get("size", 0),
+            "downloaded": download.get("size_downloaded", 0),
+            "speed": download.get("speed", 0),
+            "time_left": download.get("time_left", 0),
+            "date_added": download["date_added"],
+            "progress": progress,
+            "priority": download.get("priority", 2),
+            "max_speed": download.get("max_speed", None),
+            "max_retries": download.get("max_retries", 3),
+            "is_youtube": download.get("is_youtube", False),
+            "youtube_type": download.get("youtube_type", None),
+            "schedule": download.get("schedule", None),
+        }
+    except Exception as e:
+        print(f"Error formatting download for UI: {e}")
+        # Return a minimal download object to avoid breaking the UI
+        return {
+            "id": download.get("id", "unknown"),
+            "filename": download.get("name", "Unknown file"),
+            "status": "error",
+            "error": str(e)
+        }
 
 
 def run_api_server():
-    """Run the FastAPI server in a separate process."""
+    """Run the API server as a separate process."""
     global api_process
-    import sys
-
-    # Use the same Python executable that's running this script
-    python_executable = sys.executable
-
-    # Pass worker configurations to make the API more reliable
-    api_process = subprocess.Popen(
-        [
-            python_executable,
-            "-m",
-            "uvicorn",
-            "app.main:app",
-            "--host",
-            "localhost",
-            "--port",
-            "8000",
-            "--workers",
-            "2",  # Use multiple workers for better concurrency
-        ]
-    )
-
-    return api_process
+    
+    try:
+        # First check if the API server is already running
+        try:
+            print("Checking if API server is already running...")
+            response = requests.get("http://localhost:8000/api", timeout=2.0)
+            if response.status_code == 200:
+                print("API server is already running. Skipping startup process.")
+                return
+        except requests.ConnectionError:
+            # Most likely server not running
+            print("API server not detected, starting new server...")
+        except requests.RequestException as e:
+            # Other request errors
+            print(f"Error checking API server status: {e}. Will attempt to start new server.")
+        except Exception as e:
+            print(f"Unexpected error checking server status: {e}. Will attempt to start new server.")
+        
+        # Use Python executable to ensure we're using the right version
+        executable = sys.executable
+        
+        # Build the command to run the main.py script
+        command = [executable, "-m", "app.main", "--api-only"]
+        
+        # Start the process with appropriate options
+        if sys.platform == "win32":
+            # On Windows, use subprocess.DETACHED_PROCESS to allow the process to run independently
+            # of the console window
+            api_process = subprocess.Popen(
+                command,
+                # Don't capture stdout/stderr to allow them to be displayed in console
+                stdin=subprocess.PIPE,
+                # stdout=subprocess.PIPE,
+                # stderr=subprocess.PIPE,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+        else:
+            # On Unix-like systems, we need different settings
+            api_process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                # stdout=subprocess.PIPE,
+                # stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        
+        # Wait for server to start with exponential backoff
+        max_attempts = 10
+        base_wait_time = 1.0  # Start with 1 second
+        for attempt in range(max_attempts):
+            wait_time = base_wait_time * (1.5 ** attempt)  # Exponential backoff
+            try:
+                # Try to connect to the API
+                print(f"Attempting to connect to API server (attempt {attempt + 1}/{max_attempts})")
+                response = requests.get("http://localhost:8000/api", timeout=wait_time)
+                if response.status_code == 200:
+                    print(f"API server started successfully after {attempt + 1} attempts")
+                    # Give a little extra time for all routes and services to initialize
+                    time.sleep(1)
+                    break
+            except requests.RequestException:
+                # Server not ready yet, wait with exponential backoff
+                print(f"Waiting for API server to start (attempt {attempt + 1}/{max_attempts}, waiting {wait_time:.1f}s)...")
+                time.sleep(wait_time)
+                
+                # Check if process is still running
+                if api_process.poll() is not None:
+                    print("API server process exited prematurely!")
+                    # Try to read stdout/stderr for debugging if available
+                    if hasattr(api_process, 'stdout') and api_process.stdout:
+                        try:
+                            stdout, stderr = api_process.communicate(timeout=1)
+                            print(f"API server stdout: {stdout.decode() if stdout else 'N/A'}")
+                            print(f"API server stderr: {stderr.decode() if stderr else 'N/A'}")
+                        except Exception as comm_error:
+                            print(f"Could not read API server output: {comm_error}")
+                    # Break out of the loop
+                    break
+                
+        # If we didn't connect successfully after max attempts
+        if attempt == max_attempts - 1:
+            print("Failed to connect to API server after multiple attempts!")
+            
+    except Exception as e:
+        print(f"Error starting API server: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def shutdown_scheduler():
@@ -659,61 +781,74 @@ def open_file_location(file_path: str) -> dict:
 
 
 def start_gui():
-    """Start the Eel GUI."""
-    global api_thread, api_process
-
-    # Start the API server in a separate thread
-    api_thread = threading.Thread(target=run_api_server)
-    api_thread.daemon = True  # This ensures the thread will exit when the main program exits
-    api_thread.start()
-
-    # Give the API server time to start
-    import time
-
-    print("Starting API server...")
-    time.sleep(5)  # Increased wait time for API server to start
-
-    # Check if the API server is responding
-    api_ready = False
-    retry_count = 0
-
-    while not api_ready and retry_count < 5:
-        try:
-            response = requests.get("http://localhost:8000/api", timeout=1)
-            if response.status_code == 200:
-                api_ready = True
-                print("API server is ready")
-            else:
-                retry_count += 1
-                time.sleep(1)
-        except:
-            retry_count += 1
-            time.sleep(1)
-
-    if not api_ready:
-        print("Warning: API server may not be fully ready yet")
-
-    # Register shutdown handlers
-    def cleanup_on_exit(*args, **kwargs):
-        print("Shutting down GUI and API...")
-        # Shutdown scheduler first
-        shutdown_scheduler()
-        # Then shutdown the API server
-        shutdown_api_server()
-        sys.exit(0)
-
-    # Register for common exit signals
-    signal.signal(signal.SIGINT, cleanup_on_exit)
-    signal.signal(signal.SIGTERM, cleanup_on_exit)
-
-    # Start the application
+    """Start the GUI application."""
+    print("Starting XcelerateDL GUI...")
+    
     try:
-        # Use templates/index.html as the entry point
+        # Start the API server
+        thread = threading.Thread(target=run_api_server)
+        thread.daemon = True  # Set as daemon so it gets killed when main thread exits
+        thread.start()
+        
+        # Store the thread for later reference
+        global api_thread
+        api_thread = thread
+        
+        # Set up event handlers
+        @eel.expose
+        def on_load():
+            """Called when the UI has loaded."""
+            print("UI loaded!")
+        
+        # Register app shutdown callback
+        def cleanup_on_exit(*args, **kwargs):
+            """Handle graceful shutdown when the application exits."""
+            try:
+                print("Shutting down application...")
+                
+                # First, try to shut down the server API gracefully
+                if api_process and api_process.poll() is None:
+                    print("Sending shutdown request to API server...")
+                    try:
+                        response = requests.post("http://localhost:8000/shutdown", timeout=5)
+                        print(f"Shutdown response: {response.status_code}")
+                        
+                        # Wait a bit for the server to process the shutdown
+                        api_process.wait(timeout=5)
+                    except (requests.RequestException, subprocess.TimeoutExpired) as e:
+                        print(f"Error during graceful shutdown: {e}")
+                        
+                    # If the server is still running, terminate it forcefully
+                    if api_process.poll() is None:
+                        print("API server did not shut down gracefully, terminating process...")
+                        api_process.terminate()
+                        try:
+                            api_process.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            api_process.kill()
+                
+                print("Application shutdown complete")
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
+                
+        # Set up signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, cleanup_on_exit)
+        signal.signal(signal.SIGTERM, cleanup_on_exit)
+        
+        # Start the Eel application
+        # NOTE: We use web=False to use the default browser
         eel.start(
-            "templates/index.html", size=(1200, 800), port=8888, close_callback=cleanup_on_exit
+            "templates/index.html",
+            mode="chrome",
+            size=(1280, 800),
+            port=0,  # Use a random port
+            block=True,  # Block so that the API server stays alive
+            suppress_error=False,
+            close_callback=cleanup_on_exit,  # Add this to ensure cleanup happens when window is closed
         )
     except (SystemExit, KeyboardInterrupt):
-        # Handle any cleanup here
-        print("Shutting down GUI...")
-        shutdown_scheduler()
-        shutdown_api_server()
+        # This is expected when the application is closed normally
+        print("Application exited normally.")
+    except Exception as e:
+        print(f"Error starting GUI: {e}")
+        raise
