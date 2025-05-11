@@ -2559,6 +2559,42 @@ class DownloadManager:
                 await self.save_and_broadcast_download(download_id)
 
         return count
+        
+    async def cancel_all_active_downloads(self) -> int:
+        """Cancel all active downloads during shutdown"""
+        count = 0
+        for download_id, download in self.downloads.items():
+            if download.status in [DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED, DownloadStatus.PAUSED]:
+                # Use the cancel callback if available
+                if download.cancel_callback:
+                    if asyncio.iscoroutinefunction(download.cancel_callback):
+                        await download.cancel_callback()
+                    else:
+                        download.cancel_callback()
+                
+                # Cancel the task if it exists
+                if download_id in self.tasks and not self.tasks[download_id].done():
+                    try:
+                        self.tasks[download_id].cancel()
+                        # Give it a moment to cancel
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.wait_for(self.tasks[download_id], timeout=1.0)
+                    except Exception as e:
+                        print(f"Error canceling task for {download_id}: {e}")
+                
+                # Update status
+                download.status = DownloadStatus.FAILED
+                count += 1
+                
+                # Don't broadcast during shutdown as WebSockets may be closed
+                # Just ensure the state is saved
+                
+        # Save the state after cancelling all downloads        
+        if count > 0:
+            await self.save_downloads()
+            print(f"Cancelled {count} active downloads during shutdown")
+        
+        return count
 
     async def open_file(self, download_id: str) -> bool:
         """Open a file with the system's default application"""

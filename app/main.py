@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import os
 import sys
+import signal
 
 sys.path.append(os.getcwd())
 from contextlib import asynccontextmanager
@@ -19,6 +20,8 @@ from app.services.ws_manager import manager as ws_manager
 
 # Flag to track if server is already running
 server_running = False
+# Flag to track shutdown in progress
+shutdown_in_progress = False
 
 
 @asynccontextmanager
@@ -38,6 +41,12 @@ async def lifespan(app: FastAPI):
         await download_manager.shutdown_scheduler()
     except Exception as e:
         print(f"Error during scheduler shutdown in lifespan: {e}")
+
+    # Cancel any active downloads
+    try:
+        await download_manager.cancel_all_active_downloads()
+    except Exception as e:
+        print(f"Error canceling active downloads: {e}")
 
     # Save download state
     await download_manager.save_downloads()
@@ -130,6 +139,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.post("/shutdown")
 async def shutdown_server(background_tasks: BackgroundTasks):
     """Shutdown the server gracefully"""
+    global shutdown_in_progress
+    
+    # Prevent multiple shutdown attempts
+    if shutdown_in_progress:
+        return {"message": "Shutdown already in progress..."}
+    
+    shutdown_in_progress = True
 
     async def shutdown_app():
         # First shutdown scheduler to ensure scheduled downloads are saved
@@ -159,6 +175,12 @@ async def shutdown_server(background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"Error during scheduler shutdown: {e}")
 
+        # Cancel active downloads
+        try:
+            await download_manager.cancel_all_active_downloads()
+        except Exception as e:
+            print(f"Error canceling active downloads: {e}")
+
         # Save the download state
         try:
             await download_manager.save_downloads()
@@ -172,13 +194,30 @@ async def shutdown_server(background_tasks: BackgroundTasks):
         except asyncio.CancelledError:
             pass
 
-        # Exit the process
+        # Signal the server to gracefully shut down
         print("Server shutting down now...")
-        os._exit(0)
+        # Send SIGTERM to the current process for graceful shutdown
+        signal.raise_signal(signal.SIGTERM)
 
     # Schedule the shutdown to happen after response is sent
     background_tasks.add_task(shutdown_app)
     return {"message": "Server shutting down..."}
+
+
+def setup_signal_handlers():
+    """Setup signal handlers for graceful shutdown"""
+    
+    def handle_shutdown_signal(sig, frame):
+        global shutdown_in_progress
+        if not shutdown_in_progress:
+            print(f"Received shutdown signal {sig}, initiating graceful shutdown...")
+            shutdown_in_progress = True
+            # Let the ASGI server handle the graceful shutdown
+            # We don't need to exit here as the server will do it
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
 
 def start_api_server(host="0.0.0.0", port=8000, reload=False):
@@ -190,7 +229,10 @@ def start_api_server(host="0.0.0.0", port=8000, reload=False):
         return
 
     import uvicorn
-
+    
+    # Setup signal handlers
+    setup_signal_handlers()
+    
     server_running = True
 
     # Set longer timeout for worker processes and use more workers
