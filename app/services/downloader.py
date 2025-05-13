@@ -94,12 +94,71 @@ class DownloadManager:
 
     async def initialize(self):
         """Load saved downloads and resume interrupted ones"""
-        await self.load_downloads()
-        await self.load_bandwidth_settings()
+        # Set up backup recovery in case of data corruption
+        try:
+            await self.load_downloads()
+            await self.load_bandwidth_settings()
+        except Exception as e:
+            print(f"Error loading saved downloads: {e}")
+            # Try to recover from backup files
+            try:
+                print("Attempting to recover from backup files...")
+                # Look for backup files
+                storage_dir = os.path.dirname(self.storage_file)
+                backup_files = [f for f in os.listdir(storage_dir) if f.endswith('.bak') and f.startswith(os.path.basename(self.storage_file))]
+                
+                if backup_files:
+                    # Sort by modification time (newest first)
+                    backup_files.sort(key=lambda f: os.path.getmtime(os.path.join(storage_dir, f)), reverse=True)
+                    latest_backup = os.path.join(storage_dir, backup_files[0])
+                    print(f"Found backup file: {latest_backup}")
+                    
+                    # Replace the corrupted file with the backup
+                    import shutil
+                    shutil.copy2(latest_backup, self.storage_file)
+                    print(f"Restored from backup: {latest_backup}")
+                    
+                    # Try loading again
+                    await self.load_downloads()
+                else:
+                    print("No backup files found. Starting with empty downloads list.")
+                    self.downloads = {}
+            except Exception as recovery_error:
+                print(f"Error recovering from backup: {recovery_error}")
+                print("Starting with empty downloads list.")
+                self.downloads = {}
+            
+            # Always try to load bandwidth settings, even if downloads failed
+            try:
+                await self.load_bandwidth_settings()
+            except:
+                print("Error loading bandwidth settings. Using defaults.")
+
+        # Create a backup of the current state after successful load
+        try:
+            if os.path.exists(self.storage_file):
+                backup_path = f"{self.storage_file}.{int(time.time())}.bak"
+                import shutil
+                shutil.copy2(self.storage_file, backup_path)
+                
+                # Clean up old backups (keep only the 5 most recent)
+                storage_dir = os.path.dirname(self.storage_file)
+                backup_files = [f for f in os.listdir(storage_dir) if f.endswith('.bak') and f.startswith(os.path.basename(self.storage_file))]
+                if len(backup_files) > 5:
+                    backup_files.sort(key=lambda f: os.path.getmtime(os.path.join(storage_dir, f)))
+                    for old_backup in backup_files[:-5]:
+                        try:
+                            os.remove(os.path.join(storage_dir, old_backup))
+                        except:
+                            pass
+        except Exception as backup_error:
+            print(f"Error creating backup: {backup_error}")
 
         # Check for partially downloaded files and resume them
         downloads_to_resume = []
-        for download_id, download in self.downloads.items():
+        downloads_to_check = list(self.downloads.items())
+        
+        for download_id, download in downloads_to_check:
             # Only resume downloads that were in progress
             if download.status in [
                 DownloadStatus.DOWNLOADING,
@@ -107,32 +166,78 @@ class DownloadManager:
                 DownloadStatus.PAUSED,
             ]:
                 try:
+                    # Verify save_path is valid before attempting to access
+                    if not download.save_path or not isinstance(download.save_path, str):
+                        print(f"Warning: Invalid save path for download {download_id}. Setting to default location.")
+                        # Set a default location based on the download name or ID
+                        filename = download.name if download.name else f"download_{download_id}"
+                        download.save_path = os.path.join(self.download_dir, filename)
+                    
+                    # Make sure the parent directory exists
+                    os.makedirs(os.path.dirname(download.save_path), exist_ok=True)
+                    
                     # Check if the file exists but is incomplete
                     if os.path.exists(download.save_path):
-                        current_size = os.path.getsize(download.save_path)
-                        if download.size and current_size < download.size:
-                            # Update size_downloaded to match what's on disk
-                            download.size_downloaded = current_size
-                            download.status = DownloadStatus.PAUSED
-                            downloads_to_resume.append(download_id)
-                        elif current_size > 0 and download.size is None:
-                            # We don't know the full size, but there's partial data
-                            download.size_downloaded = current_size
-                            download.status = DownloadStatus.PAUSED
-                            downloads_to_resume.append(download_id)
-                        elif download.size and current_size > download.size:
-                            # File on disk is larger than expected, might be corrupted or a different file
-                            print(f"Warning: File {download.save_path} for {download_id} is larger ({current_size}) than expected ({download.size}). Marking as failed.")
-                            download.status = DownloadStatus.FAILED
-                            download.notes = f"File on disk ({current_size} bytes) is larger than metadata size ({download.size} bytes). Download marked as failed."
-                        elif current_size == 0 and download.size_downloaded > 0 : # If metadata says downloaded but file is 0 bytes
-                            print(f"Warning: File {download.save_path} for {download_id} is 0 bytes but metadata shows {download.size_downloaded} downloaded. Resetting and queuing.")
-                            download.size_downloaded = 0
-                            download.status = DownloadStatus.QUEUED
-                            downloads_to_resume.append(download_id)
-                        else: # Covers current_size == 0 and current_size == download.size (if not completed)
-                            # File doesn't exist (effectively, if current_size is 0 for a non-0-byte file) or is empty, mark as queued
-                            download.size_downloaded = 0
+                        try:
+                            current_size = os.path.getsize(download.save_path)
+                            
+                            # If file is accessible, check its integrity
+                            try:
+                                # Try to open the file to verify it's not locked or corrupted
+                                with open(download.save_path, "rb") as f:
+                                    # Just read a small chunk to check access
+                                    f.seek(0)
+                                    f.read(1)
+                                    
+                                    # If size is known, try to read from the end to ensure integrity
+                                    if current_size > 1024:  # Only for files > 1KB
+                                        f.seek(max(0, current_size - 1024))
+                                        f.read(1024)
+                                
+                                # File is accessible, proceed with normal checks
+                                if download.size and current_size < download.size:
+                                    # Update size_downloaded to match what's on disk
+                                    download.size_downloaded = current_size
+                                    download.status = DownloadStatus.PAUSED
+                                    downloads_to_resume.append(download_id)
+                                elif current_size > 0 and download.size is None:
+                                    # We don't know the full size, but there's partial data
+                                    download.size_downloaded = current_size
+                                    download.status = DownloadStatus.PAUSED
+                                    downloads_to_resume.append(download_id)
+                                elif download.size and current_size > download.size:
+                                    # File on disk is larger than expected, might be corrupted or a different file
+                                    print(f"Warning: File {download.save_path} for {download_id} is larger ({current_size}) than expected ({download.size}). Marking as failed.")
+                                    download.status = DownloadStatus.FAILED
+                                    download.notes = f"File on disk ({current_size} bytes) is larger than metadata size ({download.size} bytes). Download marked as failed."
+                                elif current_size == 0 and download.size_downloaded > 0:
+                                    # If metadata says downloaded but file is 0 bytes
+                                    print(f"Warning: File {download.save_path} for {download_id} is 0 bytes but metadata shows {download.size_downloaded} downloaded. Resetting and queuing.")
+                                    download.size_downloaded = 0
+                                    download.status = DownloadStatus.QUEUED
+                                    downloads_to_resume.append(download_id)
+                                else:
+                                    # Covers current_size == 0 and current_size == download.size (if not completed)
+                                    # File exists but is empty or complete, determine status
+                                    if download.size and current_size >= download.size:
+                                        # File is complete
+                                        download.status = DownloadStatus.COMPLETED
+                                        download.size_downloaded = download.size
+                                    else:
+                                        # File is empty or we don't know the size, queue it
+                                        download.size_downloaded = current_size
+                                        download.status = DownloadStatus.QUEUED
+                                        downloads_to_resume.append(download_id)
+                            
+                            except (IOError, PermissionError) as file_access_error:
+                                print(f"Warning: File {download.save_path} for {download_id} exists but may be locked or corrupted: {file_access_error}. Requeuing.")
+                                # File exists but couldn't be accessed properly
+                                download.status = DownloadStatus.QUEUED
+                                # Keep current size_downloaded but flag for restart
+                                downloads_to_resume.append(download_id)
+                        
+                        except OSError as e:
+                            print(f"Error getting file size for {download.save_path}: {e}. Requeuing download.")
                             download.status = DownloadStatus.QUEUED
                             downloads_to_resume.append(download_id)
                     else:
@@ -140,31 +245,39 @@ class DownloadManager:
                         download.size_downloaded = 0
                         download.status = DownloadStatus.QUEUED
                         downloads_to_resume.append(download_id)
+                
                 except OSError as e:
                     print(f"Error accessing file {download.save_path} for download {download_id} during resume: {e}. Marking as failed.")
                     download.status = DownloadStatus.FAILED
                     download.notes = f"Error during file check on resume: {e}"
+                
                 except Exception as e:
                     print(f"Unexpected error processing download {download_id} for resume: {e}. Marking as failed.")
                     download.status = DownloadStatus.FAILED
                     download.notes = f"Unexpected error on resume: {e}"
-            # NOTE: The 'else' block that was previously here (for the 'if download.status in [...]' condition)
-            # was redundant if the goal was to handle non-existent files, which is now covered inside the try-except.
-            # If it had other logic, that logic is now removed.
-            # Based on its content, it was for non-existent files, so it's correctly incorporated above.
+                    import traceback
+                    traceback.print_exc()
 
+        # Update download state before resuming
+        await self.save_downloads()
+        
         # Resume downloads that were interrupted
         for download_id in downloads_to_resume:
             if (
                 download_id in self.downloads
                 and self.downloads[download_id].status != DownloadStatus.SCHEDULED
             ):
-                if self.downloads[download_id].is_youtube:
-                    self.tasks[download_id] = asyncio.create_task(
-                        self._download_youtube(download_id)
-                    )
-                else:
-                    self.tasks[download_id] = asyncio.create_task(self._download_file(download_id))
+                try:
+                    if self.downloads[download_id].is_youtube:
+                        self.tasks[download_id] = asyncio.create_task(
+                            self._download_youtube(download_id)
+                        )
+                    else:
+                        self.tasks[download_id] = asyncio.create_task(self._download_file(download_id))
+                except Exception as e:
+                    print(f"Error resuming download {download_id}: {e}")
+                    self.downloads[download_id].status = DownloadStatus.FAILED
+                    self.downloads[download_id].notes = f"Error starting download task: {e}"
 
         print(
             f"Restored {len(self.downloads)} downloads, resumed {len(downloads_to_resume)} downloads"
@@ -178,16 +291,43 @@ class DownloadManager:
 
         return len(downloads_to_resume)
 
-    def _start_autosave(self, interval_seconds: int = 10):
+    def _start_autosave(self, interval_seconds: int = 5):
         """Start an automatic save task to run periodically"""
 
         async def autosave_task():
             while True:
-                await asyncio.sleep(interval_seconds)
-                await self.save_downloads()
-                await self.save_bandwidth_settings()
+                try:
+                    await asyncio.sleep(interval_seconds)
+                    
+                    # Save downloads with active ones first to prioritize their state
+                    active_downloads_exist = any(
+                        download.status == DownloadStatus.DOWNLOADING
+                        for download in self.downloads.values()
+                    )
+                    
+                    # More frequent saves if there are active downloads
+                    if active_downloads_exist:
+                        # Save immediately and then set a shorter interval for next save
+                        await self.save_downloads()
+                        await self.save_bandwidth_settings()
+                        await asyncio.sleep(interval_seconds // 2)  # Half interval for active downloads
+                    else:
+                        # Normal save for inactive state
+                        await self.save_downloads()
+                        await self.save_bandwidth_settings()
+                except Exception as e:
+                    print(f"Error in autosave task: {e}")
+                    # Don't let exceptions stop the autosave - log and continue
+                    import traceback
+                    traceback.print_exc()
+                    # Shorter sleep after error to try again quickly
+                    await asyncio.sleep(interval_seconds // 2)
 
-        asyncio.create_task(autosave_task())
+        # Create the autosave task with a name for better debugging
+        autosave_task_obj = asyncio.create_task(autosave_task(), name="download_autosave_task")
+        
+        # Store reference to the task so it doesn't get garbage collected
+        self._autosave_task = autosave_task_obj
 
     def _start_scheduler(self, check_interval_seconds: int = 60):
         """Start the scheduler for scheduled downloads"""
@@ -1606,7 +1746,17 @@ class DownloadManager:
                     await self.save_and_broadcast_download(download_id)
                     # Don't increment retry_count for this specific failure, continue to try new URL
                     continue
-                # TODO: Consider https to http fallback with security flag/option
+                # HTTPS to HTTP fallback
+                elif parsed_url.scheme == "https" and not attempted_protocol_switch:
+                    print(f"HTTPS download for {download_id} failed ({type(e).__name__}). Attempting HTTP.")
+                    current_url_to_try = urlunparse(parsed_url._replace(scheme="http"))
+                    attempted_protocol_switch = True
+                    initial_size = 0 # Reset progress for new protocol
+                    download.size_downloaded = 0
+                    download.notes = f"Switched to HTTP after {type(e).__name__}. Previous error: {e}"
+                    await self.save_and_broadcast_download(download_id)
+                    # Don't increment retry_count for this specific failure, continue to try new URL
+                    continue
 
             except Exception as e:
                 print(f"Unexpected download error for {download_id} on {current_url_to_try}: {e}")
