@@ -35,3 +35,12 @@ select = [
     "TID252",
 ]
 fixable = ["ALL"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+version_files = [
+  "your_module/__init__.py"  # Change this to wherever you keep your __version__
+]
+tag_format = "v$version"
+changelog_file = "CHANGELOG.md"
