@@ -15,7 +15,7 @@ Before installing XcelerateDL, ensure you have the following prerequisites:
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/XcelerateDL.git
+git clone https://github.com/Likhithsai2580/XcelerateDL.git
 cd XcelerateDL
 ```
 
