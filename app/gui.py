@@ -784,6 +784,10 @@ def start_gui():
     """Start the GUI application."""
     print("Starting XcelerateDL GUI...")
     
+    global api_thread, api_process # Ensure api_process is the global one being modified/accessed
+
+    _cleanup_has_run = False # Flag to ensure cleanup runs only once
+    
     try:
         # Start the API server
         thread = threading.Thread(target=run_api_server)
@@ -803,33 +807,75 @@ def start_gui():
         # Register app shutdown callback
         def cleanup_on_exit(*args, **kwargs):
             """Handle graceful shutdown when the application exits."""
+            nonlocal _cleanup_has_run
+            # api_process is global, so it's accessible
+
+            if _cleanup_has_run:
+                print("GUI: Cleanup process already initiated or completed.")
+                return
+            _cleanup_has_run = True
+
+            print("GUI: Initiating application shutdown sequence...")
             try:
-                print("Shutting down application...")
-                
-                # First, try to shut down the server API gracefully
-                if api_process and api_process.poll() is None:
-                    print("Sending shutdown request to API server...")
+                # --- Graceful API Server Shutdown ---
+                if api_process and api_process.poll() is None: # Check if process exists and is running
+                    print("GUI: API server process is active. Attempting graceful shutdown.")
+                    
+                    # Step 1: Send shutdown request to the API server
+                    print("GUI: Sending /shutdown request to API server...")
                     try:
-                        response = requests.post("http://localhost:8000/shutdown", timeout=5)
-                        print(f"Shutdown response: {response.status_code}")
-                        
-                        # Wait a bit for the server to process the shutdown
-                        api_process.wait(timeout=5)
-                    except (requests.RequestException, subprocess.TimeoutExpired) as e:
-                        print(f"Error during graceful shutdown: {e}")
-                        
-                    # If the server is still running, terminate it forcefully
-                    if api_process.poll() is None:
-                        print("API server did not shut down gracefully, terminating process...")
-                        api_process.terminate()
+                        # The API's /shutdown endpoint (in main.py) is designed to return quickly.
+                        # Uvicorn (in main.py) has timeout_graceful_shutdown=30.
+                        response = requests.post("http://localhost:8000/shutdown", timeout=10) # Timeout for the request itself
+                        print(f"GUI: API /shutdown request: Status {response.status_code}. Response: {response.text[:150]}...")
+                    except requests.RequestException as e:
+                        print(f"GUI: Failed to send /shutdown request to API server: {e}. Will proceed to terminate process.")
+                    
+                    # Step 2: Wait for the API server process to exit gracefully
+                    api_graceful_wait_timeout = 35 # Should be > uvicorn's timeout_graceful_shutdown (30s)
+                    print(f"GUI: Waiting up to {api_graceful_wait_timeout}s for API server process to self-terminate...")
+                    try:
+                        api_process.wait(timeout=api_graceful_wait_timeout)
+                        print("GUI: API server process has exited.")
+                    except subprocess.TimeoutExpired:
+                        print(f"GUI: API server process did not exit within {api_graceful_wait_timeout}s. Escalating to SIGTERM.")
+                        # Step 3: If wait times out, terminate (SIGTERM) the process
                         try:
-                            api_process.wait(timeout=3)
+                            api_process.terminate()
+                            print("GUI: Sent SIGTERM to API server process. Waiting up to 10s for termination...")
+                            api_process.wait(timeout=10) 
+                            print("GUI: API server process terminated.")
                         except subprocess.TimeoutExpired:
-                            api_process.kill()
+                            print("GUI: API server process did not terminate after SIGTERM (10s). Escalating to SIGKILL.")
+                            # Step 4: If terminate times out, kill (SIGKILL) the process
+                            try:
+                                api_process.kill()
+                                # Wait a moment for kill to take effect, though it's usually immediate
+                                api_process.wait(timeout=5) 
+                                print("GUI: Sent SIGKILL to API server process.")
+                            except Exception as e_kill:
+                                print(f"GUI: Error during API process SIGKILL or subsequent wait: {e_kill}")
+                        except Exception as e_term:
+                            print(f"GUI: Error during API process SIGTERM or subsequent wait: {e_term}")
+                    except Exception as e_wait: # Catches other errors during the initial api_process.wait()
+                        print(f"GUI: Error while waiting for API process to self-terminate: {e_wait}")
                 
-                print("Application shutdown complete")
+                elif api_process and api_process.poll() is not None:
+                    print(f"GUI: API server process was found but had already exited (Code: {api_process.returncode}).")
+                else:
+                    print("GUI: API server process not found or was not started by this GUI instance.")
+
+                # --- Add any other GUI-specific cleanup here if needed ---
+                # For example, explicitly close any open resources by the GUI itself.
+
+                print("GUI: Application shutdown sequence finished.")
             except Exception as e:
-                print(f"Error during cleanup: {e}")
+                print(f"GUI: Unhandled error during the cleanup_on_exit process: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                # This ensures that even if an error occurs, subsequent calls know it has attempted to run.
+                _cleanup_has_run = True
                 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, cleanup_on_exit)

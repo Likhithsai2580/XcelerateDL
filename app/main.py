@@ -27,6 +27,7 @@ shutdown_in_progress = False
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
+    global shutdown_in_progress # Ensure we are using the global flag
     # Startup
     resumed_count = await download_manager.initialize()
     print(f"Server started! Resumed {resumed_count} downloads.")
@@ -34,7 +35,15 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    print("Starting application shutdown process...")
+    if shutdown_in_progress:
+        print("Lifespan: Shutdown previously initiated (e.g., via /shutdown endpoint or prior signal).")
+    else:
+        # This block will run if shutdown is triggered by an external signal 
+        # not previously handled by our /shutdown logic or signal_handler which sets the flag.
+        print("Lifespan: Shutdown initiated by external signal to Uvicorn or other direct means.")
+        shutdown_in_progress = True # Mark shutdown as in progress for consistency
+
+    print("Lifespan: Starting application shutdown process...")
 
     # Shutdown scheduler first
     try:
