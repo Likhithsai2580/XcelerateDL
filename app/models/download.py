@@ -121,6 +121,7 @@ class DownloadItem(BaseModel):
     bandwidth_allocation: float | None = None  # Percentage of bandwidth (0-100)
     tags: list[str] = Field(default_factory=list)  # Tags for improved searching
     notes: str | None = None  # Notes about the download (description, errors, etc.)
+    needs_rate_limit_update: bool = Field(default=False, exclude=True) # Flag to signal rate limit update needed
 
     @property
     def progress(self) -> float:

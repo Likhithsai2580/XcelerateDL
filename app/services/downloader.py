@@ -106,29 +106,52 @@ class DownloadManager:
                 DownloadStatus.QUEUED,
                 DownloadStatus.PAUSED,
             ]:
-                # Check if the file exists but is incomplete
-                if os.path.exists(download.save_path):
-                    current_size = os.path.getsize(download.save_path)
-                    if download.size and current_size < download.size:
-                        # Update size_downloaded to match what's on disk
-                        download.size_downloaded = current_size
-                        download.status = DownloadStatus.PAUSED
-                        downloads_to_resume.append(download_id)
-                    elif current_size > 0 and download.size is None:
-                        # We don't know the full size, but there's partial data
-                        download.size_downloaded = current_size
-                        download.status = DownloadStatus.PAUSED
-                        downloads_to_resume.append(download_id)
+                try:
+                    # Check if the file exists but is incomplete
+                    if os.path.exists(download.save_path):
+                        current_size = os.path.getsize(download.save_path)
+                        if download.size and current_size < download.size:
+                            # Update size_downloaded to match what's on disk
+                            download.size_downloaded = current_size
+                            download.status = DownloadStatus.PAUSED
+                            downloads_to_resume.append(download_id)
+                        elif current_size > 0 and download.size is None:
+                            # We don't know the full size, but there's partial data
+                            download.size_downloaded = current_size
+                            download.status = DownloadStatus.PAUSED
+                            downloads_to_resume.append(download_id)
+                        elif download.size and current_size > download.size:
+                            # File on disk is larger than expected, might be corrupted or a different file
+                            print(f"Warning: File {download.save_path} for {download_id} is larger ({current_size}) than expected ({download.size}). Marking as failed.")
+                            download.status = DownloadStatus.FAILED
+                            download.notes = f"File on disk ({current_size} bytes) is larger than metadata size ({download.size} bytes). Download marked as failed."
+                        elif current_size == 0 and download.size_downloaded > 0 : # If metadata says downloaded but file is 0 bytes
+                            print(f"Warning: File {download.save_path} for {download_id} is 0 bytes but metadata shows {download.size_downloaded} downloaded. Resetting and queuing.")
+                            download.size_downloaded = 0
+                            download.status = DownloadStatus.QUEUED
+                            downloads_to_resume.append(download_id)
+                        else: # Covers current_size == 0 and current_size == download.size (if not completed)
+                            # File doesn't exist (effectively, if current_size is 0 for a non-0-byte file) or is empty, mark as queued
+                            download.size_downloaded = 0
+                            download.status = DownloadStatus.QUEUED
+                            downloads_to_resume.append(download_id)
                     else:
-                        # File doesn't exist or is empty, mark as queued
+                        # File doesn't exist, mark as queued
                         download.size_downloaded = 0
                         download.status = DownloadStatus.QUEUED
                         downloads_to_resume.append(download_id)
-                else:
-                    # File doesn't exist, mark as queued
-                    download.size_downloaded = 0
-                    download.status = DownloadStatus.QUEUED
-                    downloads_to_resume.append(download_id)
+                except OSError as e:
+                    print(f"Error accessing file {download.save_path} for download {download_id} during resume: {e}. Marking as failed.")
+                    download.status = DownloadStatus.FAILED
+                    download.notes = f"Error during file check on resume: {e}"
+                except Exception as e:
+                    print(f"Unexpected error processing download {download_id} for resume: {e}. Marking as failed.")
+                    download.status = DownloadStatus.FAILED
+                    download.notes = f"Unexpected error on resume: {e}"
+            # NOTE: The 'else' block that was previously here (for the 'if download.status in [...]' condition)
+            # was redundant if the goal was to handle non-existent files, which is now covered inside the try-except.
+            # If it had other logic, that logic is now removed.
+            # Based on its content, it was for non-existent files, so it's correctly incorporated above.
 
         # Resume downloads that were interrupted
         for download_id in downloads_to_resume:
@@ -155,7 +178,7 @@ class DownloadManager:
 
         return len(downloads_to_resume)
 
-    def _start_autosave(self, interval_seconds: int = 30):
+    def _start_autosave(self, interval_seconds: int = 10):
         """Start an automatic save task to run periodically"""
 
         async def autosave_task():
@@ -701,9 +724,10 @@ class DownloadManager:
         # Apply the new speed limits
         for download_id in active_downloads:
             download = self.downloads[download_id]
-            if download.pause_resume_callback:
-                # Let the download know its speed has changed
-                await download.pause_resume_callback(paused=False)
+            # download.max_speed has already been set by the logic above
+            # Instead of calling the callback, set a flag to signal the download task
+            download.needs_rate_limit_update = True
+            # The download task itself will pick this up and re-initialize its rate limiter.
 
     def _detect_category(self, filename: str) -> FileCategory:
         """Detect file category based on filename and extension"""
@@ -1224,6 +1248,8 @@ class DownloadManager:
         # Retry loop for the download
         retry_count = 0
         max_retries = download.max_retries
+        current_url_to_try = str(download.url) # Initialize with the original URL
+        attempted_protocol_switch = False # Flag to ensure we only switch protocol once
 
         while retry_count <= max_retries:
             try:
@@ -1240,10 +1266,13 @@ class DownloadManager:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     headers = {}
                     if initial_size > 0:
-                        # Resume download from where we left off
                         headers["Range"] = f"bytes={initial_size}-"
 
-                    async with session.get(str(download.url), headers=headers) as response:
+                    # Use current_url_to_try for the GET request
+                    async with session.get(current_url_to_try, headers=headers) as response:
+                        # Raise an HTTPError for bad responses (4xx or 5xx)
+                        response.raise_for_status()
+
                         # Check if the server supports resume
                         if initial_size > 0 and response.status != 206:
                             # Server doesn't support resuming, start from the beginning
@@ -1285,8 +1314,10 @@ class DownloadManager:
                             pause_event.set()  # Not paused initially
 
                             # Variable for rate limiting
-                            rate_limit = None
+                            # Initialize rate_limit based on current download.max_speed
+                            rate_limit = download.max_speed if download.max_speed else None
                             last_chunk_time = datetime.now()
+                            download.needs_rate_limit_update = False # Clear flag as we're setting rate_limit now
 
                             # Set up pause/resume callback function
                             async def pause_resume_callback(paused: bool = None):
@@ -1360,6 +1391,14 @@ class DownloadManager:
                                 async for chunk in response.content.iter_chunked(chunk_size):
                                     # Check if we should pause
                                     await pause_event.wait()
+
+                                    # Update rate_limit if signaled by an external change (e.g., recalculate_bandwidth)
+                                    if download.needs_rate_limit_update:
+                                        new_max_speed = download.max_speed if download.max_speed else None
+                                        if rate_limit != new_max_speed:
+                                            rate_limit = new_max_speed
+                                            print(f"Download {download_id}: Internal rate_limit updated to {rate_limit} due to flag.")
+                                        download.needs_rate_limit_update = False # Reset the flag
 
                                     # Check if we've been cancelled
                                     if download.status == DownloadStatus.FAILED:
@@ -1437,11 +1476,10 @@ class DownloadManager:
                                         last_size = download.size_downloaded
 
                             except asyncio.CancelledError:
-                                print(f"Download {download_id} was cancelled")
-                                # Just exit the function, the download status is already set
-                                download.pause_resume_callback = None
-                                download.cancel_callback = None
-                                # Recalculate bandwidth allocation
+                                print(f"Download {download_id} cancelled.")
+                                download.status = DownloadStatus.FAILED # Or some other appropriate status
+                                download.notes = "Download was cancelled."
+                                await self.save_and_broadcast_download(download_id, "cancel")
                                 await self._recalculate_bandwidth_allocation()
                                 return
                             except TimeoutError as e:
@@ -1526,57 +1564,76 @@ class DownloadManager:
                             )
                             return
 
-            except aiohttp.ClientError as e:
-                print(f"Download error: {e}")
-                retry_count += 1
-                if retry_count <= max_retries:
-                    print(f"Retrying download {download_id} (attempt {retry_count}/{max_retries})")
-                    await asyncio.sleep(2**retry_count)  # Exponential backoff
-                else:
-                    # All retries failed
-                    download.status = DownloadStatus.FAILED
-                    download.pause_resume_callback = None
-                    download.cancel_callback = None
-                    await self.save_and_broadcast_download(download_id, "error")
+            except asyncio.CancelledError:
+                print(f"Download {download_id} cancelled.")
+                download.status = DownloadStatus.FAILED # Or some other appropriate status
+                download.notes = "Download was cancelled."
+                await self.save_and_broadcast_download(download_id, "cancel")
+                await self._recalculate_bandwidth_allocation()
+                return
 
-                    # Check if this was a scheduled download that should be retried
-                    if (
-                        download.schedule
-                        and download.schedule.retry_on_failure
-                        and download.schedule.current_schedule_retries
-                        < download.schedule.max_schedule_retries
-                    ):
-                        # Add to failed scheduled downloads for retry
-                        retry_time = datetime.now() + timedelta(
-                            minutes=download.schedule.retry_delay_minutes
-                        )
-                        self.scheduler_failed_downloads[download_id] = {
-                            "retry_time": retry_time,
-                            "attempts": download.schedule.current_schedule_retries,
-                        }
+            except aiohttp.ClientError as e: # Covers ClientResponseError, ClientConnectionError, etc.
+                error_message = f"Download error for {download_id} on URL {current_url_to_try}: {e}"
+                if isinstance(e, aiohttp.ClientResponseError):
+                    error_message = f"HTTP error for {download_id} on URL {current_url_to_try}: {e.status} {e.message}"
+                    # Specific handling for 416 Range Not Satisfiable
+                    if e.status == 416 and initial_size > 0:
+                        print(f"Got 416 Range Not Satisfiable for {download_id}. Resetting download from beginning.")
+                        initial_size = 0
+                        download.size_downloaded = 0
+                        download.notes = f"Reset due to 416 error on {current_url_to_try}."
+                        if os.path.exists(download.save_path):
+                            try:
+                                async with aiofiles.open(download.save_path, "wb") as f_truncate:
+                                    await f_truncate.truncate(0)
+                            except Exception as fe:
+                                print(f"Error truncating file {download.save_path}: {fe}")
+                        await self.save_and_broadcast_download(download_id)
+                        continue # Retry immediately with initial_size = 0 for the same URL
 
-                        # Send notification about retry
-                        await self._send_notification(
-                            download_id,
-                            "Scheduled Download Failed",
-                            f"The download '{download.name}' failed. Retrying in {download.schedule.retry_delay_minutes} minutes.",
-                            "warning",
-                        )
-                    else:
-                        # Send standard error notification
-                        await self._send_notification(
-                            download_id,
-                            "Download Failed",
-                            f"The download '{download.name}' failed after {max_retries} retries: {str(e)}",
-                            "error",
-                        )
+                print(error_message)
+                download.notes = error_message
 
-                    # Recalculate bandwidth allocation
-                    await self._recalculate_bandwidth_allocation()
-                    return
+                # Attempt HTTP to HTTPS fallback
+                parsed_url = urlparse(current_url_to_try)
+                if parsed_url.scheme == "http" and not attempted_protocol_switch:
+                    print(f"HTTP download for {download_id} failed ({type(e).__name__}). Attempting HTTPS.")
+                    current_url_to_try = urlunparse(parsed_url._replace(scheme="https"))
+                    attempted_protocol_switch = True
+                    initial_size = 0 # Reset progress for new protocol
+                    download.size_downloaded = 0
+                    download.notes = f"Switched to HTTPS after {type(e).__name__}. Previous error: {e}"
+                    await self.save_and_broadcast_download(download_id)
+                    # Don't increment retry_count for this specific failure, continue to try new URL
+                    continue
+                # TODO: Consider https to http fallback with security flag/option
 
-        # This should not be reached in normal operation
-        print(f"Download {download_id} exited unexpectedly")
+            except Exception as e:
+                print(f"Unexpected download error for {download_id} on {current_url_to_try}: {e}")
+                import traceback
+                traceback.print_exc()
+                download.notes = f"Unexpected error on {current_url_to_try}: {e}"
+
+            # If we are here, an error occurred that wasn't handled by a 'continue' (like protocol switch or 416)
+            retry_count += 1
+            download.retry_count = retry_count
+            if retry_count <= max_retries:
+                await self.save_and_broadcast_download(download_id)
+                retry_delay = min(2**retry_count, 60)  # Exponential backoff with a cap, e.g., 60s
+                print(f"Retrying download {download_id} ({retry_count}/{max_retries}) for {current_url_to_try} in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+            else:
+                print(f"Download {download_id} failed after {max_retries} retries on {current_url_to_try}.")
+                download.status = DownloadStatus.FAILED
+                # Ensure notes reflect the final URL tried and the number of retries
+                final_note = f"Failed after {max_retries} retries. Last URL tried: {current_url_to_try}. Last error: {download.notes}"
+                if download.notes and str(e) not in download.notes: # Append if distinct
+                     final_note = f"Failed after {max_retries} retries on {current_url_to_try}. Last error before final retry: {download.notes}. Final error: {e}"
+                elif not download.notes:
+                    final_note = f"Failed after {max_retries} retries on {current_url_to_try}. Error: {e}"
+                download.notes = final_note[:500] # Truncate notes if too long
+
+                await self.save_and_broadcast_download(download_id)
 
     async def _download_youtube(self, download_id: str) -> None:
         """Download a YouTube video using yt-dlp with pause/resume functionality"""
@@ -2475,7 +2532,8 @@ class DownloadManager:
             print(f"Cancelling existing task for download {download_id}")
             try:
                 self.tasks[download_id].cancel()
-                await asyncio.sleep(0.1)  # Give it a moment to clean up
+                # Give it a moment to clean up
+                await asyncio.sleep(0.1)
             except Exception as e:
                 print(f"Error cancelling existing task: {e}")
 
