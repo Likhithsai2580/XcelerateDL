@@ -1098,8 +1098,19 @@ class DownloadManager:
             return filename, size
 
         try:
+            # --- BEGIN MODIFICATION: TCPConnector for get_file_info ---
+            connector_settings = {
+                "limit": self.bandwidth_settings.connector_limit,
+                "limit_per_host": self.bandwidth_settings.connector_limit_per_host,
+            }
+            # Use smaller, specific limits for HEAD requests if desired, e.g. by having separate config
+            # For now, using global download connector limits.
+            connector_settings = {k: v for k, v in connector_settings.items() if v is not None}
+            connector = aiohttp.TCPConnector(**connector_settings)
+            # --- END MODIFICATION ---
+
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(connector=connector) as session, # Pass connector here
                 session.head(url, allow_redirects=True) as response,
             ):
                 if response.status != 200:
@@ -1436,7 +1447,17 @@ class DownloadManager:
 
                 # Set up aiohttp session with timeout
                 timeout = aiohttp.ClientTimeout(total=None, sock_connect=60, sock_read=60)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+
+                # --- BEGIN MODIFICATION: TCPConnector for regular downloads ---
+                connector_settings = {
+                    "limit": self.bandwidth_settings.connector_limit,
+                    "limit_per_host": self.bandwidth_settings.connector_limit_per_host,
+                }
+                connector_settings = {k: v for k, v in connector_settings.items() if v is not None}
+                connector = aiohttp.TCPConnector(**connector_settings)
+                # --- END MODIFICATION ---
+
+                async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                     headers = {}
                     if initial_size > 0:
                         headers["Range"] = f"bytes={initial_size}-"
@@ -2024,43 +2045,44 @@ class DownloadManager:
                 # Start fresh progress tracking
                 chunk_progress = [0] * len(chunk_boundaries)
             
-            async def download_chunk(chunk_index, start_byte, end_byte):
-                chunk_file = os.path.join(temp_dir, f"chunk_{chunk_index}")
-                existing_progress = chunk_progress[chunk_index]
-                
-                # If this chunk is already complete, skip downloading
-                chunk_size = end_byte - start_byte + 1
-                if existing_progress == chunk_size and os.path.exists(chunk_file):
-                    chunk_file_size = os.path.getsize(chunk_file)
-                    if chunk_file_size == chunk_size:
-                        print(f"Chunk {chunk_index} already complete ({chunk_size} bytes), skipping")
-                        return True
-                
-                # If we have partial progress, adjust the range
-                if existing_progress > 0 and os.path.exists(chunk_file):
-                    adjusted_start = start_byte + existing_progress
-                    print(f"Resuming chunk {chunk_index} from position {adjusted_start} (skipping {existing_progress} bytes)")
-                    headers = {"Range": f"bytes={adjusted_start}-{end_byte}"}
-                    # Open file in append mode
-                    file_mode = 'ab'
-                else:
-                    # Start from beginning of chunk
-                    headers = {"Range": f"bytes={start_byte}-{end_byte}"}
-                    # Open file in write mode
-                    file_mode = 'wb'
-                    # Reset progress for this chunk
-                    chunk_progress[chunk_index] = 0
-                
-                timeout = aiohttp.ClientTimeout(total=None, sock_connect=60, sock_read=60)
-                
-                # Handle retries for this chunk
-                retry_count = 0
-                max_retries = download.max_retries
-                
-                while retry_count <= max_retries:
-                    try:
-                        async with aiohttp.ClientSession(timeout=timeout) as session:
-                            async with session.get(current_url_to_try, headers=headers) as response:
+            timeout = aiohttp.ClientTimeout(total=None, sock_connect=60, sock_read=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session: # Session created here for all chunks
+
+                async def download_chunk(chunk_index, start_byte, end_byte):
+                    chunk_file = os.path.join(temp_dir, f"chunk_{chunk_index}")
+                    existing_progress = chunk_progress[chunk_index]
+                    
+                    # If this chunk is already complete, skip downloading
+                    chunk_size = end_byte - start_byte + 1
+                    if existing_progress == chunk_size and os.path.exists(chunk_file):
+                        chunk_file_size = os.path.getsize(chunk_file)
+                        if chunk_file_size == chunk_size:
+                            print(f"Chunk {chunk_index} already complete ({chunk_size} bytes), skipping")
+                            return True
+                    
+                    # If we have partial progress, adjust the range
+                    if existing_progress > 0 and os.path.exists(chunk_file):
+                        adjusted_start = start_byte + existing_progress
+                        print(f"Resuming chunk {chunk_index} from position {adjusted_start} (skipping {existing_progress} bytes)")
+                        headers = {"Range": f"bytes={adjusted_start}-{end_byte}"}
+                        # Open file in append mode
+                        file_mode = 'ab'
+                    else:
+                        # Start from beginning of chunk
+                        headers = {"Range": f"bytes={start_byte}-{end_byte}"}
+                        # Open file in write mode
+                        file_mode = 'wb'
+                        # Reset progress for this chunk
+                        chunk_progress[chunk_index] = 0
+                    
+                    # Handle retries for this chunk
+                    retry_count = 0
+                    max_retries = download.max_retries
+                    
+                    while retry_count <= max_retries:
+                        try:
+                            # async with aiohttp.ClientSession(timeout=timeout) as session: # REMOVED - use outer session
+                            async with session.get(current_url_to_try, headers=headers) as response: # Use outer session
                                 if response.status != 206:
                                     print(f"Warning: Chunk {chunk_index} got status {response.status} instead of 206")
                                     if response.status == 416:  # Range Not Satisfiable
@@ -2100,139 +2122,138 @@ class DownloadManager:
                                 
                                 return True  # Success
                                 
-                    except asyncio.CancelledError:
-                        print(f"Chunk {chunk_index} cancelled")
-                        return False
-                    except aiohttp.ClientError as e:
-                        print(f"Error downloading chunk {chunk_index}: {e}")
-                        retry_count += 1
-                        if retry_count <= max_retries:
-                            await asyncio.sleep(2**retry_count)  # Exponential backoff
-                        else:
+                        except asyncio.CancelledError:
+                            print(f"Chunk {chunk_index} cancelled")
                             return False
-                    except Exception as e:
-                        print(f"Unexpected error downloading chunk {chunk_index}: {e}")
-                        retry_count += 1
-                        if retry_count <= max_retries:
-                            await asyncio.sleep(2**retry_count)
-                        else:
-                            return False
-            
-            # Initialize total progress tracking
-            total_progress = sum(chunk_progress)
-            download.size_downloaded = total_progress
-            download._last_total_progress = total_progress
-            
-            # Start downloading chunks
-            for i, (start, end) in enumerate(chunk_boundaries):
-                task = asyncio.create_task(download_chunk(i, start, end))
-                chunk_tasks.append(task)
-            
-            # Monitor progress while chunks are downloading
-            last_update_time = time.time()
-            
-            while chunk_tasks:
-                # Check for pause or cancel
-                if download.status == DownloadStatus.FAILED:
-                    for task in chunk_tasks:
-                        task.cancel()
-                    break
+                        except aiohttp.ClientError as e:
+                            print(f"Error downloading chunk {chunk_index}: {e}")
+                            retry_count += 1
+                            if retry_count <= max_retries:
+                                await asyncio.sleep(2**retry_count)  # Exponential backoff
+                            else:
+                                return False
+                        except Exception as e:
+                            print(f"Unexpected error downloading chunk {chunk_index}: {e}")
+                            retry_count += 1
+                            if retry_count <= max_retries:
+                                await asyncio.sleep(2**retry_count)
+                            else:
+                                return False
                 
-                # Check progress
-                current_time = time.time()
-                if current_time - last_update_time >= 1.0:  # Update once per second
-                    # Calculate total progress
-                    total_downloaded = sum(chunk_progress)
-                    download.size_downloaded = total_downloaded
+                total_progress = sum(chunk_progress)
+                download.size_downloaded = total_progress
+                download._last_total_progress = total_progress
+                
+                # Start downloading chunks
+                for i, (start, end) in enumerate(chunk_boundaries):
+                    task = asyncio.create_task(download_chunk(i, start, end))
+                    chunk_tasks.append(task)
+                
+                # Monitor progress while chunks are downloading
+                last_update_time = time.time()
+                
+                while chunk_tasks:
+                    # Check for pause or cancel
+                    if download.status == DownloadStatus.FAILED:
+                        for task in chunk_tasks:
+                            task.cancel()
+                        break
                     
-                    # Calculate speed and ETA
-                    time_diff = current_time - last_update_time
-                    if time_diff > 0:
-                        progress_diff = total_downloaded - download._last_total_progress
-                        download.speed = int(progress_diff / time_diff)
+                    # Check progress
+                    current_time = time.time()
+                    if current_time - last_update_time >= 1.0:  # Update once per second
+                        # Calculate total progress
+                        total_downloaded = sum(chunk_progress)
+                        download.size_downloaded = total_downloaded
                         
-                        # Calculate ETA
-                        if download.speed > 0:
-                            remaining_size = download.size - total_downloaded
-                            download.time_left = int(remaining_size / download.speed)
+                        # Calculate speed and ETA
+                        time_diff = current_time - last_update_time
+                        if time_diff > 0:
+                            progress_diff = total_downloaded - download._last_total_progress
+                            download.speed = int(progress_diff / time_diff)
+                            
+                            # Calculate ETA
+                            if download.speed > 0:
+                                remaining_size = download.size - total_downloaded
+                                download.time_left = int(remaining_size / download.speed)
                     
-                    # Save the progress for next calculation
-                    download._last_total_progress = total_downloaded
-                    last_update_time = current_time
+                        # Save the progress for next calculation
+                        download._last_total_progress = total_downloaded
+                        last_update_time = current_time
+                        
+                        # Broadcast update
+                        await self._broadcast_download_update(download_id)
                     
-                    # Broadcast update
-                    await self._broadcast_download_update(download_id)
-                
-                # Check if any tasks have completed
-                done, pending = await asyncio.wait(chunk_tasks, timeout=0.5)
-                
-                # Process completed tasks
-                for task in done:
-                    try:
-                        success = await task
-                        if not success:
-                            # Cancel all remaining tasks if one fails
-                            print("Chunk download failed, cancelling remaining chunks")
-                            for remaining_task in pending:
-                                remaining_task.cancel()
+                    # Check if any tasks have completed
+                    done, pending = await asyncio.wait(chunk_tasks, timeout=0.5)
+                    
+                    # Process completed tasks
+                    for task in done:
+                        try:
+                            success = await task
+                            if not success:
+                                # Cancel all remaining tasks if one fails
+                                print("Chunk download failed, cancelling remaining chunks")
+                                for remaining_task in pending:
+                                    remaining_task.cancel()
+                                download.status = DownloadStatus.FAILED
+                                await self.save_and_broadcast_download(download_id, "error")
+                                return
+                        except Exception as e:
+                            print(f"Error in chunk task: {e}")
                             download.status = DownloadStatus.FAILED
                             await self.save_and_broadcast_download(download_id, "error")
                             return
-                    except Exception as e:
-                        print(f"Error in chunk task: {e}")
-                        download.status = DownloadStatus.FAILED
-                        await self.save_and_broadcast_download(download_id, "error")
-                        return
+                    
+                    # Update remaining tasks
+                    chunk_tasks = list(pending)
                 
-                # Update remaining tasks
-                chunk_tasks = list(pending)
+                # If we reach here, all chunks completed or were cancelled
+                if download.status == DownloadStatus.FAILED:
+                    print(f"Download {download_id} was cancelled during chunk download")
+                    return # Ensure we exit if failed
             
-            # If we reach here, all chunks completed or were cancelled
-            if download.status == DownloadStatus.FAILED:
-                print(f"Download {download_id} was cancelled during chunk download")
-                return
-            
-            # Combine chunks into the final file
-            print(f"All chunks downloaded, combining into final file: {download.save_path}")
-            try:
-                async with aiofiles.open(download.save_path, 'wb') as outfile:
-                    for i in range(len(chunk_boundaries)):
-                        chunk_file = os.path.join(temp_dir, f"chunk_{i}")
-                        if os.path.exists(chunk_file):
-                            async with aiofiles.open(chunk_file, 'rb') as infile:
-                                while True:
-                                    data = await infile.read(10485760)  # Read 10MB at a time
-                                    if not data:
-                                        break
-                                    await outfile.write(data)
+                # Combine chunks into the final file
+                print(f"All chunks downloaded, combining into final file: {download.save_path}")
+                try:
+                    async with aiofiles.open(download.save_path, 'wb') as outfile:
+                        for i in range(len(chunk_boundaries)):
+                            chunk_file = os.path.join(temp_dir, f"chunk_{i}")
+                            if os.path.exists(chunk_file):
+                                async with aiofiles.open(chunk_file, 'rb') as infile:
+                                    while True:
+                                        data = await infile.read(10485760)  # Read 10MB at a time
+                                        if not data:
+                                            break
+                                        await outfile.write(data)
                 
-                # Update download status
-                download.status = DownloadStatus.COMPLETED
-                download.size_downloaded = download.size
-                download.speed = 0
-                download.time_left = None
-                
-                # Clear callbacks
-                download.pause_resume_callback = None
-                download.cancel_callback = None
-                
-                # Final update
-                await self.save_and_broadcast_download(download_id, "complete")
-                await self._recalculate_bandwidth_allocation()
-                
-                # Send notification
-                await self._send_notification(
-                    download_id,
-                    "Download Complete",
-                    f"The download '{download.name}' has completed successfully.",
-                    "success"
-                )
-                
-            except Exception as e:
-                print(f"Error combining chunks: {e}")
-                download.status = DownloadStatus.FAILED
-                download.notes = f"Error combining chunks: {e}"
-                await self.save_and_broadcast_download(download_id, "error")
+                    # Update download status
+                    download.status = DownloadStatus.COMPLETED
+                    download.size_downloaded = download.size
+                    download.speed = 0
+                    download.time_left = None
+                    
+                    # Clear callbacks
+                    download.pause_resume_callback = None
+                    download.cancel_callback = None
+                    
+                    # Final update
+                    await self.save_and_broadcast_download(download_id, "complete")
+                    await self._recalculate_bandwidth_allocation()
+                    
+                    # Send notification
+                    await self._send_notification(
+                        download_id,
+                        "Download Complete",
+                        f"The download '{download.name}' has completed successfully.",
+                        "success"
+                    )
+                    
+                except Exception as e:
+                    print(f"Error combining chunks: {e}")
+                    download.status = DownloadStatus.FAILED
+                    download.notes = f"Error combining chunks: {e}"
+                    await self.save_and_broadcast_download(download_id, "error")
         
         finally:
             # Clean up temp directory

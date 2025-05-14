@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum, IntEnum
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -147,10 +148,22 @@ class DownloadsListResponse(BaseModel):
 class BandwidthSettings(BaseModel):
     """Global bandwidth settings for the download manager"""
 
-    total_bandwidth: int  # Total available bandwidth in bytes/second
-    allocation_mode: BandwidthAllocationMode = BandwidthAllocationMode.EQUAL
-    custom_allocations: dict[str, float] = {}  # download_id -> percentage (0-100)
-    max_concurrent_downloads: int = 5  # Maximum number of concurrent downloads
+    total_bandwidth: int = Field(default=10 * 1024 * 1024, description="Total bandwidth in B/s")
+    allocation_mode: BandwidthAllocationMode = Field(
+        default=BandwidthAllocationMode.EQUAL, description="How to allocate bandwidth"
+    )
+    max_concurrent_downloads: int = Field(
+        default=5, description="Maximum number of concurrent downloads"
+    )
+    custom_allocations: Optional[dict[str, int]] = Field(
+        default=None, description="Custom bandwidth allocations (download_id: percentage)"
+    )
+    connector_limit: Optional[int] = Field(
+        default=100, description="Total connection limit for aiohttp connector"
+    )
+    connector_limit_per_host: Optional[int] = Field(
+        default=20, description="Connection limit per host for aiohttp connector"
+    )
     enable_scheduling: bool = True  # Enable smart scheduling of downloads
     peak_hours_throttling: bool = False  # Throttle downloads during peak hours
     peak_hours_start: int = 18  # Default peak hours start (6 PM)
