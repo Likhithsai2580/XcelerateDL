@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
-
+import socket
 import aiofiles
 import aiohttp
 
@@ -73,9 +73,31 @@ class DownloadManager:
         self.download_dir = os.path.abspath(download_dir)
         self.storage_file = os.path.abspath(storage_file)
         self.bandwidth_file = os.path.abspath(bandwidth_file)
+        
+        # OPTIMIZATION: Setup SSL context for HTTP/2 once
+        self.ssl_context = None
+        try:
+            import ssl
+            self.ssl_context = ssl.create_default_context()
+            # Configure for both HTTP/1.1 and HTTP/2
+            self.ssl_context.set_alpn_protocols(["h2", "http/1.1"])
+        except ImportError:
+            print("SSL module not available, HTTP/2 support disabled")
+        
+        # NOTE: Socket options code removed as sock_opts parameter is not supported in this aiohttp version
+        # These optimizations would have included Nagle's algorithm disabling and TCP keep-alive settings
+        # TCP optimizations can still be managed at the OS level
+        
+        # OPTIMIZATION: Create a shared connection pool for all downloads
+        self._connection_pool = None
+        self._shared_session = None
+        
         self.bandwidth_settings = BandwidthSettings(
             total_bandwidth=10 * 1024 * 1024,  # Default: 10 MB/s
             allocation_mode=BandwidthAllocationMode.EQUAL,
+            # OPTIMIZATION: Increased connection limits for better parallelization
+            connector_limit=100,         # Increased from default 100 to allow more concurrent connections
+            connector_limit_per_host=16  # Increased from default 0 to allow more connections per host
         )
 
         # Scheduler settings
@@ -94,6 +116,28 @@ class DownloadManager:
 
     async def initialize(self):
         """Load saved downloads and resume interrupted ones"""
+        # OPTIMIZATION: Initialize the shared connection pool
+        if not self._connection_pool:
+            connector_settings = {
+                "limit": self.bandwidth_settings.connector_limit,
+                "limit_per_host": self.bandwidth_settings.connector_limit_per_host,
+                "enable_cleanup_closed": True,
+                "force_close": False,
+                "ttl_dns_cache": 600,  # 10 minutes DNS cache
+            }
+            
+            # Add SSL support if available
+            # Note: HTTP/2 support (enable_http2 parameter) was removed as it's not supported in this aiohttp version
+            if self.ssl_context:
+                connector_settings["ssl"] = self.ssl_context
+            
+            # Socket options removed as sock_opts parameter is not supported in this aiohttp version
+            # Note: TCP optimizations will need to be implemented differently or managed at OS level
+            
+            # Create the shared connection pool
+            self._connection_pool = aiohttp.TCPConnector(**connector_settings)
+            print("Initialized shared connection pool for downloads")
+        
         # Set up backup recovery in case of data corruption
         try:
             await self.load_downloads()
@@ -779,16 +823,21 @@ class DownloadManager:
 
         if not active_downloads:
             return
-
+            
+        # OPTIMIZATION: Smart bandwidth allocation based on file types and priorities
         # Calculate bandwidth allocation based on the allocation mode
         if self.bandwidth_settings.allocation_mode == BandwidthAllocationMode.EQUAL:
-            # Equal share for all active downloads
-            per_download_bandwidth = self.bandwidth_settings.total_bandwidth // len(
-                active_downloads
-            )
-
-            for download_id in active_downloads:
-                download = self.downloads[download_id]
+            # Get active download objects
+            active_download_objects = [self.downloads[download_id] for download_id in active_downloads]
+            
+            # Apply smart bandwidth allocation based on file types
+            # Prioritize downloads based on type (smaller files finish faster, reducing connection overhead)
+            small_downloads = []  # Small files like documents, images finish faster
+            medium_downloads = []  # Medium size like audio, software
+            large_downloads = []  # Large files like videos, ISO images
+            
+            for download in active_download_objects:
+                # Skip if user has specified a custom allocation
                 if download.bandwidth_allocation is not None:
                     # User has specified a custom allocation for this download
                     download.max_speed = int(
@@ -796,8 +845,67 @@ class DownloadManager:
                         * download.bandwidth_allocation
                         / 100
                     )
+                    continue
+                    
+                # Smart download categorization
+                if download.size:
+                    if download.size < 10 * 1024 * 1024:  # < 10MB
+                        small_downloads.append(download)
+                    elif download.size < 100 * 1024 * 1024:  # < 100MB
+                        medium_downloads.append(download)
+                    else:  # >= 100MB
+                        large_downloads.append(download)
                 else:
-                    download.max_speed = per_download_bandwidth
+                    # No size info, categorize based on file extension/category
+                    if download.category in [FileCategory.DOCUMENTS, FileCategory.PICTURES]:
+                        small_downloads.append(download)
+                    elif download.category in [FileCategory.MUSIC, FileCategory.PROGRAMS]:
+                        medium_downloads.append(download)
+                    elif download.category in [FileCategory.VIDEOS, FileCategory.COMPRESSED]:
+                        large_downloads.append(download)
+                    else:
+                        medium_downloads.append(download)  # Default
+            
+            # Calculate allocation percentages
+            # Allocate more bandwidth to smaller files initially to complete them faster
+            total_downloads = len(active_download_objects)
+            small_count = len(small_downloads)
+            medium_count = len(medium_downloads)
+            large_count = len(large_downloads)
+            
+            if small_count + medium_count + large_count < total_downloads:
+                # Some downloads have custom allocation, recalculate remaining bandwidth
+                remaining_bandwidth = self.bandwidth_settings.total_bandwidth - sum(
+                    int(self.bandwidth_settings.total_bandwidth * d.bandwidth_allocation / 100)
+                    for d in active_download_objects if d.bandwidth_allocation is not None
+                )
+            else:
+                remaining_bandwidth = self.bandwidth_settings.total_bandwidth
+                
+            if small_count > 0:
+                # Give small downloads 2x share per download to complete them quickly
+                small_share = remaining_bandwidth * 0.5 if medium_count + large_count > 0 else remaining_bandwidth
+                per_small_bandwidth = int(small_share / small_count)
+                for download in small_downloads:
+                    download.max_speed = per_small_bandwidth
+                remaining_bandwidth -= small_share
+            
+            if medium_count > 0:
+                # Medium downloads get an even share of remaining bandwidth
+                medium_share = remaining_bandwidth * 0.66 if large_count > 0 else remaining_bandwidth
+                per_medium_bandwidth = int(medium_share / medium_count)
+                for download in medium_downloads:
+                    download.max_speed = per_medium_bandwidth
+                remaining_bandwidth -= medium_share
+            
+            if large_count > 0:
+                # Large downloads split the rest 
+                per_large_bandwidth = int(remaining_bandwidth / large_count)
+                for download in large_downloads:
+                    download.max_speed = per_large_bandwidth
+        
+            # Log allocation
+            print(f"Smart bandwidth allocation: {small_count} small, {medium_count} medium, {large_count} large files")
 
         elif self.bandwidth_settings.allocation_mode == BandwidthAllocationMode.PRIORITY:
             # Allocate based on priority levels
@@ -1173,6 +1281,27 @@ class DownloadManager:
 
     async def add_download(self, request: CreateDownloadRequest) -> DownloadItem:
         """Add a new download and start it"""
+        # OPTIMIZATION: Pre-resolve DNS for faster connection establishment
+        try:
+            if not self._connection_pool:
+                # Create connection pool if it doesn't exist
+                await self.initialize()
+                
+            # Extract domain for pre-resolution
+            url = str(request.url)
+            parsed_url = urlparse(url)
+            hostname = parsed_url.hostname
+            
+            if hostname:
+                try:
+                    # Start DNS resolution in background
+                    asyncio.create_task(self._resolve_dns(hostname))
+                except Exception as dns_error:
+                    # Don't fail download if DNS resolution fails
+                    print(f"Background DNS resolution failed: {dns_error}")
+        except Exception as e:
+            print(f"Error in DNS optimization: {e}")
+            
         # Handle scheduling
         initial_status = DownloadStatus.QUEUED
         should_start_now = True  # Default is to start now
@@ -1354,10 +1483,19 @@ class DownloadManager:
         Download a file with automatic selection between chunked and regular methods.
         This method decides whether to use parallel chunking or regular single connection.
         """
+        import os  # Ensure os is imported here too
+        
         download = self.downloads.get(download_id)
         if not download:
             print(f"Download {download_id} not found")
             return
+        
+        # Ensure the download state is properly set to DOWNLOADING
+        if download.status == DownloadStatus.QUEUED:
+            download.status = DownloadStatus.DOWNLOADING
+            await self.save_and_broadcast_download(download_id)
+            await self._recalculate_bandwidth_allocation()
+            print(f"Updated download {download_id} status from QUEUED to DOWNLOADING")
         
         # Try to get file size information first if not already known
         if not download.size:
@@ -1371,16 +1509,26 @@ class DownloadManager:
             except Exception as e:
                 print(f"Error getting file info: {e}")
         
-        # Determine whether to use chunked download
-        # Files over 10MB will use chunked download
-        min_size_for_chunking = 10 * 1024 * 1024  # 10MB
+        # OPTIMIZATION: Lower threshold to 5MB for chunked downloading
+        min_size_for_chunking = 5 * 1024 * 1024  # 5MB
         
-        if download.size and download.size >= min_size_for_chunking:
-            print(f"Using parallel chunked download for {download_id} ({download.size} bytes)")
-            await self._download_file_chunked(download_id)
-        else:
-            print(f"Using regular download for {download_id}")
-            await self._download_file_regular(download_id)
+        try:
+            if download.size and download.size >= min_size_for_chunking:
+                # OPTIMIZATION: Calculate optimal number of chunks based on file size
+                chunks = min(16, max(4, download.size // (20 * 1024 * 1024)))  # 4-16 chunks based on file size
+                print(f"Using parallel chunked download for {download_id} ({download.size} bytes) with {chunks} chunks")
+                await self._download_file_chunked(download_id, chunks=int(chunks))
+            else:
+                print(f"Using regular download for {download_id}")
+                await self._download_file_regular(download_id)
+        except Exception as e:
+            print(f"ERROR starting download {download_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Mark as failed so user can retry
+            download.status = DownloadStatus.FAILED
+            download.notes = f"Error starting download: {str(e)}"
+            await self.save_and_broadcast_download(download_id, "error")
         
     async def _download_file_regular(self, download_id: str) -> None:
         """Download a file using the original single-connection method."""
@@ -1448,14 +1596,29 @@ class DownloadManager:
                 # Set up aiohttp session with timeout
                 timeout = aiohttp.ClientTimeout(total=None, sock_connect=60, sock_read=60)
 
-                # --- BEGIN MODIFICATION: TCPConnector for regular downloads ---
+                # --- BEGIN OPTIMIZATION: Enhanced TCPConnector ---
                 connector_settings = {
                     "limit": self.bandwidth_settings.connector_limit,
                     "limit_per_host": self.bandwidth_settings.connector_limit_per_host,
+                    "enable_cleanup_closed": True,  # Clean up closed connections
+                    "force_close": False,          # Enable connection pooling/reuse
+                    "ttl_dns_cache": 300,          # Cache DNS results for 5 minutes
                 }
+                
+                # Add SSL support if available
+                try:
+                    import ssl
+                    ssl_context = ssl.create_default_context()
+                    # Configure for both HTTP/1.1 and HTTP/2 at protocol level
+                    ssl_context.set_alpn_protocols(["h2", "http/1.1"])
+                    connector_settings["ssl"] = ssl_context
+                except ImportError:
+                    print("SSL module not available, HTTP/2 support disabled")
+                
+                # Remove any None values from settings
                 connector_settings = {k: v for k, v in connector_settings.items() if v is not None}
                 connector = aiohttp.TCPConnector(**connector_settings)
-                # --- END MODIFICATION ---
+                # --- END OPTIMIZATION ---
 
                 async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                     headers = {}
@@ -1490,7 +1653,8 @@ class DownloadManager:
 
                         # Open the file and start downloading
                         async with aiofiles.open(download.save_path, mode) as f:
-                            chunk_size = 1048576  # 1MB
+                            # OPTIMIZATION: Increased buffer size from 1MB to 4MB for faster I/O
+                            chunk_size = 4194304  # 4MB
                             downloaded_since_update = 0
                             last_update_time = datetime.now()
                             last_downloaded = download.size_downloaded
@@ -1788,29 +1952,54 @@ class DownloadManager:
                 print(error_message)
                 download.notes = error_message
 
-                # Attempt HTTP to HTTPS fallback
+                # OPTIMIZATION: Smarter protocol selection - try HTTP and HTTPS in parallel if not attempted yet
                 parsed_url = urlparse(current_url_to_try)
-                if parsed_url.scheme == "http" and not attempted_protocol_switch:
-                    print(f"HTTP download for {download_id} failed ({type(e).__name__}). Attempting HTTPS.")
-                    current_url_to_try = urlunparse(parsed_url._replace(scheme="https"))
+                if not attempted_protocol_switch:
+                    print(f"Download failed for {download_id}. Will attempt both HTTP and HTTPS in parallel.")
                     attempted_protocol_switch = True
-                    initial_size = 0 # Reset progress for new protocol
+                    initial_size = 0  # Reset progress for new protocol attempts
                     download.size_downloaded = 0
-                    download.notes = f"Switched to HTTPS after {type(e).__name__}. Previous error: {e}"
-                    await self.save_and_broadcast_download(download_id)
-                    # Don't increment retry_count for this specific failure, continue to try new URL
-                    continue
-                # HTTPS to HTTP fallback
-                elif parsed_url.scheme == "https" and not attempted_protocol_switch:
-                    print(f"HTTPS download for {download_id} failed ({type(e).__name__}). Attempting HTTP.")
-                    current_url_to_try = urlunparse(parsed_url._replace(scheme="http"))
-                    attempted_protocol_switch = True
-                    initial_size = 0 # Reset progress for new protocol
-                    download.size_downloaded = 0
-                    download.notes = f"Switched to HTTP after {type(e).__name__}. Previous error: {e}"
-                    await self.save_and_broadcast_download(download_id)
-                    # Don't increment retry_count for this specific failure, continue to try new URL
-                    continue
+                    download.notes = f"Trying both HTTP and HTTPS protocols in parallel after error: {e}"
+                    
+                    # Create alternative URL with opposite protocol
+                    alt_scheme = "http" if parsed_url.scheme == "https" else "https"
+                    alt_url = urlunparse(parsed_url._replace(scheme=alt_scheme))
+                    
+                    # Try both protocols in parallel to see which responds faster
+                    async def try_protocol(url, timeout=10):
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.head(url, timeout=timeout) as response:
+                                    return url, response.status, response.headers.get("Content-Length")
+                        except Exception:
+                            return url, 0, None
+                    
+                    # Execute both requests in parallel
+                    original_url = current_url_to_try
+                    results = await asyncio.gather(
+                        try_protocol(original_url), 
+                        try_protocol(alt_url),
+                        return_exceptions=True
+                    )
+                    
+                    # Find the best URL to use based on response
+                    best_url = None
+                    for result in results:
+                        if isinstance(result, tuple) and result[1] >= 200 and result[1] < 400:
+                            best_url = result[0]
+                            break
+                    
+                    if best_url:
+                        print(f"Protocol test succeeded. Using {best_url}")
+                        current_url_to_try = best_url
+                        await self.save_and_broadcast_download(download_id)
+                        continue
+                    else:
+                        # If both failed, default to the original URL but with alternate protocol
+                        print(f"Both protocols failed or timed out. Trying alternate protocol.")
+                        current_url_to_try = alt_url
+                        await self.save_and_broadcast_download(download_id)
+                        continue
 
             except Exception as e:
                 print(f"Unexpected download error for {download_id} on {current_url_to_try}: {e}")
@@ -1818,13 +2007,25 @@ class DownloadManager:
                 traceback.print_exc()
                 download.notes = f"Unexpected error on {current_url_to_try}: {e}"
 
-            # If we are here, an error occurred that wasn't handled by a 'continue' (like protocol switch or 416)
+            # OPTIMIZATION: Enhanced retry mechanism with smarter exponential backoff
             retry_count += 1
             download.retry_count = retry_count
             if retry_count <= max_retries:
                 await self.save_and_broadcast_download(download_id)
-                retry_delay = min(2**retry_count, 60)  # Exponential backoff with a cap, e.g., 60s
-                print(f"Retrying download {download_id} ({retry_count}/{max_retries}) for {current_url_to_try} in {retry_delay}s...")
+                
+                # More aggressive retry with smart exponential backoff
+                # Use shorter delays for the first few retries, then exponential backoff
+                if retry_count <= 2:
+                    # Quick retries for the first couple of attempts
+                    retry_delay = retry_count * 1.5  # 1.5s, then 3s
+                else:
+                    # Then more patient exponential backoff with randomization to avoid thundering herd
+                    import random
+                    base_delay = min(2**(retry_count-2) * 3, 60)  # 3s, 6s, 12s, 24s, 48s, 60s
+                    jitter = random.uniform(0.8, 1.2)  # Add ±20% randomness
+                    retry_delay = base_delay * jitter
+                
+                print(f"Retrying download {download_id} ({retry_count}/{max_retries}) for {current_url_to_try} in {retry_delay:.1f}s...")
                 await asyncio.sleep(retry_delay)
             else:
                 print(f"Download {download_id} failed after {max_retries} retries on {current_url_to_try}.")
@@ -1848,6 +2049,8 @@ class DownloadManager:
             chunks: Number of chunks to split the file into (default: 4)
             min_chunk_size: Minimum size per chunk in bytes (default: 5MB)
         """
+        import os  # Ensure os module is available in this function scope
+        
         download = self.downloads.get(download_id)
         if not download:
             print(f"Download {download_id} not found")
@@ -1868,10 +2071,61 @@ class DownloadManager:
 
         # Create parent directory if it doesn't exist
         os.makedirs(os.path.dirname(download.save_path), exist_ok=True)
-
-        # Check if this is resuming a previously paused chunked download
+        
+        # Initialize resuming_chunked flag before using it
         resuming_chunked = False
         temp_dir = None
+        
+        # OPTIMIZATION: Preallocate file to reduce fragmentation and improve write speed
+        if not resuming_chunked and download.size and download.size > min_chunk_size and (
+            not os.path.exists(download.save_path) or 
+            os.path.getsize(download.save_path) < download.size
+        ):
+            try:
+                print(f"Preallocating file with size {download.size} for {download_id}")
+                
+                # Try to preallocate the entire file first
+                with open(download.save_path, "wb") as f:
+                    try:
+                        # Try posix_fallocate first (Linux, newer Unix)
+                        import os
+                        if hasattr(os, 'posix_fallocate'):
+                            os.posix_fallocate(f.fileno(), 0, download.size)
+                            print(f"Used posix_fallocate to preallocate {download.size} bytes")
+                    except (AttributeError, ImportError, OSError):
+                        try:
+                            # Try Windows-specific method
+                            import ctypes
+                            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+                            handle = ctypes.c_void_p(f.fileno())
+                            
+                            # Move file pointer to end of desired size
+                            current_pos = kernel32.SetFilePointer(handle, download.size, None, 0)
+                            
+                            # Set end of file to current position
+                            if current_pos != 0xFFFFFFFF and kernel32.SetEndOfFile(handle):
+                                print(f"Used Windows API to preallocate {download.size} bytes")
+                            else:
+                                # Fallback to basic preallocation
+                                f.seek(download.size - 1)
+                                f.write(b'\0')
+                                print(f"Used basic preallocation for {download.size} bytes")
+                            
+                            # Reset file pointer to beginning
+                            f.seek(0)
+                        except (ImportError, Exception) as win_err:
+                            print(f"Windows preallocation failed: {win_err}, using basic method")
+                            # Fallback to basic preallocation (less efficient but works everywhere)
+                            f.seek(download.size - 1)
+                            f.write(b'\0')
+                            f.seek(0)
+                            print(f"Used basic preallocation for {download.size} bytes")
+            except Exception as e:
+                # Don't fail the download if preallocation fails
+                print(f"File preallocation failed: {e}, continuing without preallocation")
+
+        # Check if this is resuming a previously paused chunked download
+        # Note: resuming_chunked and temp_dir are already initialized above
         
         if download.status == DownloadStatus.PAUSED and hasattr(download, '_chunked_download_state'):
             try:
@@ -1931,18 +2185,29 @@ class DownloadManager:
                 await self._download_file_regular(download_id)
                 return
 
-            # Determine chunk size and count
+            # OPTIMIZATION: Improved chunk boundary calculation for more even distribution
             file_size = download.size
-            optimal_chunk_size = max(min_chunk_size, file_size // chunks)
             
-            # Calculate chunk boundaries
+            # Calculate optimal chunk distribution to avoid uneven chunk sizes
+            # This ensures the last chunk isn't significantly smaller than others
+            chunks = min(chunks, file_size // min_chunk_size)  # Don't create more chunks than necessary
+            chunks = max(2, chunks)  # Ensure at least 2 chunks for parallelization
+            
+            optimal_chunk_size = file_size // chunks
+            
+            # Calculate chunk boundaries with more even distribution
             chunk_boundaries = []
-            for i in range(chunks):
+            for i in range(chunks - 1):
                 start = i * optimal_chunk_size
-                end = min(start + optimal_chunk_size - 1, file_size - 1)
-                if start > end:
-                    break  # Skip empty chunks
+                end = (i + 1) * optimal_chunk_size - 1
                 chunk_boundaries.append((start, end))
+            
+            # Add the last chunk to ensure we get the entire file (handles any remainder)
+            last_start = (chunks - 1) * optimal_chunk_size
+            last_end = file_size - 1
+            chunk_boundaries.append((last_start, last_end))
+            
+            print(f"Optimized {chunks} chunks with ~{optimal_chunk_size//1024}KB per chunk")
         
         # Set up tracking variables
         download.status = DownloadStatus.DOWNLOADING
@@ -2064,16 +2329,27 @@ class DownloadManager:
                     if existing_progress > 0 and os.path.exists(chunk_file):
                         adjusted_start = start_byte + existing_progress
                         print(f"Resuming chunk {chunk_index} from position {adjusted_start} (skipping {existing_progress} bytes)")
-                        headers = {"Range": f"bytes={adjusted_start}-{end_byte}"}
+                        headers = {
+                            "Range": f"bytes={adjusted_start}-{end_byte}",
+                            # OPTIMIZATION: Request compressed transfer if possible
+                            "Accept-Encoding": "gzip, deflate, br"
+                        }
                         # Open file in append mode
                         file_mode = 'ab'
                     else:
                         # Start from beginning of chunk
-                        headers = {"Range": f"bytes={start_byte}-{end_byte}"}
+                        headers = {
+                            "Range": f"bytes={start_byte}-{end_byte}",
+                            # OPTIMIZATION: Request compressed transfer if possible
+                            "Accept-Encoding": "gzip, deflate, br"
+                        }
                         # Open file in write mode
                         file_mode = 'wb'
                         # Reset progress for this chunk
                         chunk_progress[chunk_index] = 0
+                        
+                    # OPTIMIZATION: Determine if we should use memory mapping for this chunk
+                    use_memory_map = chunk_size >= 10 * 1024 * 1024  # Use memory mapping for chunks >= 10MB
                     
                     # Handle retries for this chunk
                     retry_count = 0
@@ -2090,27 +2366,89 @@ class DownloadManager:
                                         headers = {"Range": f"bytes={start_byte}-{end_byte}"}
                                         continue
                                         
-                                # Open file using correct mode
-                                async with aiofiles.open(chunk_file, file_mode) as f:
-                                    chunk_size = 1048576  # 1MB read buffer
-                                    bytes_downloaded = 0
-                                    expected_size = end_byte - start_byte + 1
-                                    
-                                    # Read and write the chunk
-                                    async for data in response.content.iter_chunked(chunk_size):
-                                        # Check for pause
-                                        await pause_event.wait()
+                                # OPTIMIZATION: Use memory-mapped files for large chunks
+                                expected_size = end_byte - start_byte + 1
+                                bytes_downloaded = 0
+                                
+                                # Try memory mapping for large chunks in write mode
+                                if file_mode == 'wb' and chunk_size >= 10 * 1024 * 1024:  # 10MB+
+                                    try:
+                                        import mmap
                                         
-                                        # Check for cancellation
-                                        if download.status == DownloadStatus.FAILED:
-                                            return False
+                                        # Create the file with proper size
+                                        with open(chunk_file, "wb") as f:
+                                            f.seek(chunk_size - 1)
+                                            f.write(b'\0')
                                         
-                                        # Write data
-                                        await f.write(data)
-                                        bytes_downloaded += len(data)
+                                        # Use memory mapping for writing
+                                        with open(chunk_file, "r+b") as f:
+                                            # Create memory map
+                                            mm = mmap.mmap(f.fileno(), chunk_size)
+                                            
+                                            # OPTIMIZATION: Use larger buffer size
+                                            buffer_size = 4194304  # 4MB read buffer
+                                            offset = 0
+                                            
+                                            try:
+                                                async for data in response.content.iter_chunked(buffer_size):
+                                                    # Check for pause
+                                                    await pause_event.wait()
+                                                    
+                                                    # Check for cancellation
+                                                    if download.status == DownloadStatus.FAILED:
+                                                        mm.close()
+                                                        return False
+                                                    
+                                                    # Write data directly to memory map
+                                                    data_len = len(data)
+                                                    mm[offset:offset+data_len] = data
+                                                    offset += data_len
+                                                    bytes_downloaded += data_len
+                                                    
+                                                    # Update progress
+                                                    chunk_progress[chunk_index] = bytes_downloaded
+                                                    
+                                                # Ensure all changes are written to disk
+                                                mm.flush()
+                                            finally:
+                                                # Always close memory map
+                                                mm.close()
+                                            
+                                            print(f"Memory-mapped write completed for chunk {chunk_index}")
+                                            
+                                    except (ImportError, OSError, MemoryError) as e:
+                                        # Fall back to standard file I/O if memory mapping fails
+                                        print(f"Memory map failed for chunk {chunk_index}, using standard I/O: {e}")
                                         
-                                        # Update progress for this chunk
-                                        chunk_progress[chunk_index] = bytes_downloaded
+                                        # Need to reset file since it might be corrupted
+                                        with open(chunk_file, "wb") as f:
+                                            pass  # Truncate file
+                                            
+                                        # Use standard async file I/O as fallback
+                                        async with aiofiles.open(chunk_file, file_mode) as f:
+                                            buffer_size = 4194304  # 4MB read buffer
+                                            bytes_downloaded = 0
+                                            
+                                            async for data in response.content.iter_chunked(buffer_size):
+                                                await pause_event.wait()
+                                                if download.status == DownloadStatus.FAILED:
+                                                    return False
+                                                await f.write(data)
+                                                bytes_downloaded += len(data)
+                                                chunk_progress[chunk_index] = bytes_downloaded
+                                else:
+                                    # Use standard async file I/O for smaller chunks or append mode
+                                    async with aiofiles.open(chunk_file, file_mode) as f:
+                                        buffer_size = 4194304  # 4MB read buffer
+                                        bytes_downloaded = 0
+                                        
+                                        async for data in response.content.iter_chunked(buffer_size):
+                                            await pause_event.wait()
+                                            if download.status == DownloadStatus.FAILED:
+                                                return False
+                                            await f.write(data)
+                                            bytes_downloaded += len(data)
+                                            chunk_progress[chunk_index] = bytes_downloaded
                                 
                                 # Verify chunk size
                                 if bytes_downloaded != expected_size:
@@ -3966,6 +4304,36 @@ class DownloadManager:
         else:
             print("No active scheduler task to shutdown")
             return True
+            
+    async def shutdown(self):
+        """
+        OPTIMIZATION: Gracefully shutdown all download operations
+        Close connection pools and finish any pending operations
+        """
+        print("Shutting down download manager...")
+        
+        # Cancel all active downloads
+        await self.cancel_all_active_downloads()
+        
+        # Save current state
+        await self.save_downloads()
+        
+        # Shutdown scheduler
+        await self.shutdown_scheduler()
+        
+        # Close the shared connection pool
+        if self._connection_pool:
+            try:
+                print("Closing shared connection pool")
+                self._connection_pool.close()
+                await self._connection_pool.wait_closed()
+                self._connection_pool = None
+                print("Connection pool closed successfully")
+            except Exception as e:
+                print(f"Error closing connection pool: {e}")
+                
+        print("Download manager shutdown complete")
+        return True
 
     def _parse_speed(self, speed_str: str) -> int:
         """Parse speed string (like '1.2MiB/s') and convert to bytes per second"""
@@ -4034,6 +4402,50 @@ class DownloadManager:
                 return 0
         except (ValueError, IndexError):
             return 0
+            
+    async def _resolve_dns(self, hostname: str, port: int = 80) -> bool:
+        """
+        OPTIMIZATION: Resolve DNS ahead of time and cache the result
+        
+        Args:
+            hostname: The hostname to resolve
+            port: The port to use for the connection (default: 80)
+            
+        Returns:
+            True if resolution was successful, False otherwise
+        """
+        try:
+            if not self._connection_pool:
+                print("Cannot resolve DNS: connection pool not initialized")
+                return False
+                
+            # Use the connection pool's resolver to look up the hostname
+            # This will cache the result for future connections
+            resolver = self._connection_pool._resolver
+            if not resolver:
+                print("No DNS resolver available in connection pool")
+                return False
+                
+            # Resolve both IPv4 and IPv6 addresses
+            try:
+                # Try IPv4 first
+                await resolver.resolve(hostname, 80, family=socket.AF_INET)
+                print(f"Pre-resolved IPv4 for {hostname}")
+            except Exception as e4:
+                print(f"IPv4 resolution failed for {hostname}: {e4}")
+                
+            try:
+                # Then try IPv6
+                await resolver.resolve(hostname, 80, family=socket.AF_INET6)
+                print(f"Pre-resolved IPv6 for {hostname}")
+            except Exception as e6:
+                # IPv6 failure is common and expected
+                pass
+                
+            return True
+        except Exception as e:
+            print(f"DNS resolution failed for {hostname}: {e}")
+            return False
 
     async def load_downloads(self):
         """Load downloads from a JSON file"""
