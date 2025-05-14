@@ -3784,62 +3784,98 @@ class DownloadManager:
 
         return download
 
-    def _calculate_next_scheduled_time(self, schedule, current_time):
-        """Calculate the next occurrence time for a recurring schedule"""
-        scheduled_time = schedule.scheduled_time
+    def _calculate_next_scheduled_time(self, schedule: ScheduleSettings, current_time: datetime) -> datetime:
+        """Calculate the next occurrence time for a recurring schedule, ensuring it's in the future."""
+        # Ensure original scheduled_time's time component is timezone-aware (UTC) for combining
+        original_scheduled_time_utc = schedule.scheduled_time
+        if original_scheduled_time_utc.tzinfo is None:
+            original_scheduled_time_utc = original_scheduled_time_utc.replace(tzinfo=UTC)
+        else:
+            original_scheduled_time_utc = original_scheduled_time_utc.astimezone(UTC)
+        
+        time_component = original_scheduled_time_utc.timetz() # Use timetz() to keep tzinfo
 
-        # Ensure we're working with timezone-aware datetimes
-        if not hasattr(current_time, "tzinfo") or current_time.tzinfo is None:
-            current_time = current_time.replace(tzinfo=UTC)
-
-        if not hasattr(scheduled_time, "tzinfo") or scheduled_time.tzinfo is None:
-            scheduled_time = scheduled_time.replace(tzinfo=UTC)
+        # Ensure current_time is timezone-aware (UTC) for comparison
+        current_time_utc = current_time
+        if current_time_utc.tzinfo is None:
+            current_time_utc = current_time_utc.replace(tzinfo=UTC)
+        else:
+            current_time_utc = current_time_utc.astimezone(UTC)
 
         if schedule.recurrence == RecurrenceType.DAILY:
-            # Schedule for tomorrow at the same time
-            return scheduled_time + timedelta(days=1)
+            # Start checking from today's date with the schedule's time component
+            next_dt_candidate = datetime.combine(current_time_utc.date(), time_component)
+            
+            # If it's already past for today, or exactly now, then schedule for tomorrow
+            if next_dt_candidate <= current_time_utc:
+                next_dt_candidate = datetime.combine(current_time_utc.date() + timedelta(days=1), time_component)
+            return next_dt_candidate
 
         elif schedule.recurrence == RecurrenceType.WEEKLY and schedule.days_of_week:
-            # Find the next occurrence based on days_of_week
-            today_weekday = current_time.weekday()  # 0=Monday, 6=Sunday
-            next_day = None
+            sorted_days_of_week = sorted(list(set(schedule.days_of_week))) # 0=Mon, 6=Sun
 
-            # Sort the days to find the next upcoming day
-            for day in sorted(schedule.days_of_week):
-                if day > today_weekday:
-                    next_day = day
-                    break
+            for i in range(8): # Check today and up to 7 days ahead (total 8 checks)
+                check_date = current_time_utc.date() + timedelta(days=i)
+                if check_date.weekday() in sorted_days_of_week:
+                    next_dt = datetime.combine(check_date, time_component)
+                    if next_dt > current_time_utc:
+                        return next_dt
+            
+            # Fallback: If somehow no date found in next 8 days (should not happen with valid days_of_week)
+            # This indicates a potential logic error or highly unusual state.
+            # Safest is to schedule for the first available day in the *following* week.
+            current_weekday = current_time_utc.weekday()
+            first_scheduled_day_in_list = sorted_days_of_week[0]
+            # Days until this weekday occurs next week
+            days_to_add = (first_scheduled_day_in_list - current_weekday + 7) % 7 + 7 
+            final_date = current_time_utc.date() + timedelta(days=days_to_add)
+            return datetime.combine(final_date, time_component)
 
-            # If no day found, wrap around to the first day in the list
-            if next_day is None and schedule.days_of_week:
-                next_day = min(schedule.days_of_week)
-                days_ahead = 7 - today_weekday + next_day
-            else:
-                days_ahead = next_day - today_weekday
-
-            return scheduled_time + timedelta(days=days_ahead)
 
         elif schedule.recurrence == RecurrenceType.MONTHLY and schedule.day_of_month:
-            # Get the target day of month
-            target_day = min(schedule.day_of_month, 28)  # Use 28 as a safe max
+            # Iterate for current month and next month to find a suitable date
+            for month_offset in range(2): # 0 for current month, 1 for next month
+                year_to_check = current_time_utc.year
+                month_to_check = current_time_utc.month + month_offset
+                
+                if month_to_check > 12:
+                    month_to_check -= 12
+                    year_to_check += 1
+                
+                try:
+                    _, days_in_month = calendar.monthrange(year_to_check, month_to_check)
+                    # Ensure target_day is valid for the specific month
+                    target_day_for_month = min(schedule.day_of_month, days_in_month)
+                    
+                    candidate_date = datetime(year_to_check, month_to_check, target_day_for_month).date()
+                    next_dt = datetime.combine(candidate_date, time_component)
 
-            # Get the next month
-            next_month = current_time.month + 1
-            next_year = current_time.year
+                    if next_dt > current_time_utc:
+                        return next_dt
+                except ValueError: # Should be rare due to min(schedule.day_of_month, days_in_month)
+                    continue # Try next month if current month calculation fails (e.g. bad day_of_month like 31 for Feb)
 
-            if next_month > 12:
-                next_month = 1
-                next_year += 1
+            # Fallback if no suitable date found in current or next month (e.g., if schedule.day_of_month is invalid like 32)
+            # Schedule for the target day in month after next, ensuring day is valid.
+            year_to_check = current_time_utc.year
+            month_to_check = current_time_utc.month + 2 # Month after next
+            while month_to_check > 12:
+                month_to_check -=12
+                year_to_check +=1
+            
+            _, days_in_month = calendar.monthrange(year_to_check, month_to_check)
+            target_day = min(schedule.day_of_month if schedule.day_of_month >=1 else 1, days_in_month) # ensure day_of_month is at least 1
+            final_date = datetime(year_to_check, month_to_check, target_day).date()
+            return datetime.combine(final_date, time_component)
 
-            # Create the next scheduled time
-            return scheduled_time.replace(
-                year=next_year,
-                month=next_month,
-                day=min(target_day, calendar.monthrange(next_year, next_month)[1]),
-            )
 
-        # Default fallback (shouldn't normally reach here)
-        return scheduled_time + timedelta(days=1)
+        # Fallback for unhandled recurrence types or if schedule is None (should not happen if called correctly)
+        # Log a warning if this fallback is reached, as it indicates an issue.
+        print(f"Warning: _calculate_next_scheduled_time fallback for schedule: {schedule}, current_time: {current_time_utc.isoformat()}")
+        # Default to 1 hour from now if original time is in the past or not applicable
+        if schedule.scheduled_time and schedule.scheduled_time > current_time_utc:
+            return schedule.scheduled_time 
+        return current_time_utc + timedelta(hours=1)
 
     def _clone_download_for_next_occurrence(self, download, next_time):
         """Create a clone of a download for the next scheduled occurrence"""
